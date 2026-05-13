@@ -3,7 +3,7 @@
 **Version:** 1.0.6  
 **Author / Product owner:** SEKO Consulting - Lukasz Sekowski  
 **Contact:** lukasz.hubert.sekowski@gmail.com  
-**License:** MIT open-source license
+**License:** SEKO Consulting Source-Available License
 
 Chrome Extension MVP for SAP Integration Suite / Cloud Integration iFlow dependency visibility based on ProcessDirect adapter addresses.
 
