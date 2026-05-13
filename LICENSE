@@ -1,19 +1,31 @@
-SEKO Consulting Source-Available License
+SEKO Consulting Source-Available Free Internal Use License
 
 Copyright (c) 2026 SEKO Consulting - Lukasz Sekowski
 
-This software is made available for personal, educational, internal business,
-consulting, evaluation, and non-commercial use.
+This software is made available free of charge for personal use, educational use,
+evaluation, and internal use by individuals, consultants, companies, and other
+organizations.
 
-Permission is granted to use, copy, modify, and share this software, provided that:
+Permission is granted to use, copy, install, run, inspect, modify, and share this
+software internally within an organization, provided that:
 
 1. The copyright notice and this license notice are preserved.
-2. The software is not sold, sublicensed, rented, leased, or offered as part of a paid product or paid service.
-3. The software is not redistributed as part of a commercial package, commercial marketplace listing, paid extension bundle, or paid consulting deliverable without prior written permission from the copyright holder.
-4. Modified versions must clearly state that they are modified versions and must not imply endorsement by SEKO Consulting or Lukasz Sekowski.
-5. The software may not be used in a way that removes or hides the original author attribution.
+2. The software is not sold, sublicensed, rented, leased, or offered as a paid product.
+3. The software is not published in a commercial marketplace, paid extension catalog,
+   paid software bundle, or paid consulting/service package without prior written
+   permission from the copyright holder.
+4. The software is not redistributed externally as part of a commercial product,
+   commercial service, or paid deliverable without prior written permission.
+5. Modified versions must clearly state that they are modified versions and must not
+   imply endorsement by SEKO Consulting or Lukasz Sekowski.
+6. The original author attribution must not be removed or hidden.
 
-Commercial licensing, resale, marketplace publication, or inclusion in paid products/services requires prior written permission from:
+Corporate and enterprise users may use the software free of charge for their own
+internal purposes, including internal SAP Integration Suite analysis, support,
+governance, documentation, and impact assessment activities.
+
+Commercial licensing, resale, marketplace publication, or inclusion in paid
+products/services requires prior written permission from:
 
 SEKO Consulting - Lukasz Sekowski
 lukasz.hubert.sekowski@gmail.com
