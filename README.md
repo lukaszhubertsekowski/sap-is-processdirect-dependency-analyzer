@@ -119,8 +119,6 @@ The default cascade depth is 4 and can be changed in configuration.
 
 - Added product owner information in the top-right corner of the extension UI.
 - Set Chrome extension manifest version to `1.0.0`.
-- Added copyright/open-source headers to source files.
-- Added MIT open-source license file.
 
 
 ## Version 1.0.1
