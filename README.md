@@ -115,23 +115,6 @@ The **Generate Diagram** button renders the selected iFlow in the center, upstre
 
 The default cascade depth is 4 and can be changed in configuration.
 
-## Known MVP limitations
-
-- The extension uses Chrome IndexedDB and does not synchronize data between users.
-- OAuth credentials are stored locally by Chrome extension storage, with masked UI field. For production enterprise rollout, consider managed extension policy or a backend proxy if stricter credential handling is required.
-- ZIP64 archives are not supported. Standard SAP iFlow ZIP exports are expected to work.
-- The extension assumes the iFlow ZIP contains UTF-8 XML/properties files.
-- If the SAP API host rejects browser-origin calls despite extension permissions, a lightweight backend proxy may be needed. In many Chrome extension deployments, host permissions are sufficient.
-
-## Suggested production hardening
-
-- Restrict `host_permissions` in `manifest.json` from `https://*/*` to exact SAP tenant and OAuth hosts.
-- Add managed enterprise configuration for tenant URLs and OAuth mode.
-- Add delta synchronization if SAP API timestamps are reliable for the tenant.
-- Add duplicate-address governance warnings, because multiple senders for the same ProcessDirect address are ambiguous.
-- Add export/import of dependency database for support diagnostics.
-
-
 ## Version 1.0.0
 
 - Added product owner information in the top-right corner of the extension UI.
