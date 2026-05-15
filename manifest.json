@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SAP IS ProcessDirect Dependency Explorer",
   "description": "Synchronizes SAP Integration Suite iFlows and visualizes ProcessDirect upstream/downstream dependencies.",
-  "version": "1.0.6",
+  "version": "1.0.8",
   "permissions": [
     "storage"
   ],

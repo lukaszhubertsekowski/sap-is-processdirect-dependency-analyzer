@@ -1,11 +1,13 @@
 # SAP IS ProcessDirect Dependency Explorer
 
-**Version:** 1.0.6  
+**Version:** 1.0.8  
 **Author / Product owner:** SEKO Consulting - Lukasz Sekowski  
 **Contact:** lukasz.hubert.sekowski@gmail.com  
 **License:** SEKO Consulting Source-Available Free Internal Use License
 
 Chrome Extension MVP for SAP Integration Suite / Cloud Integration iFlow dependency visibility based on ProcessDirect adapter addresses.
+
+Corporate and enterprise users may use it free of charge for internal SAP Integration Suite analysis, support, governance, documentation, and impact assessment. Resale, sublicensing, marketplace publication, or inclusion in paid products/services requires prior written permission.
 
 ## What it does
 
@@ -115,10 +117,29 @@ The **Generate Diagram** button renders the selected iFlow in the center, upstre
 
 The default cascade depth is 4 and can be changed in configuration.
 
+## Known MVP limitations
+
+- The extension uses Chrome IndexedDB and does not synchronize data between users.
+- OAuth credentials are stored locally by Chrome extension storage, with masked UI field. For production enterprise rollout, consider managed extension policy or a backend proxy if stricter credential handling is required.
+- ZIP64 archives are not supported. Standard SAP iFlow ZIP exports are expected to work.
+- The extension assumes the iFlow ZIP contains UTF-8 XML/properties files.
+- If the SAP API host rejects browser-origin calls despite extension permissions, a lightweight backend proxy may be needed. In many Chrome extension deployments, host permissions are sufficient.
+
+## Suggested production hardening
+
+- Restrict `host_permissions` in `manifest.json` from `https://*/*` to exact SAP tenant and OAuth hosts.
+- Add managed enterprise configuration for tenant URLs and OAuth mode.
+- Add delta synchronization if SAP API timestamps are reliable for the tenant.
+- Add optional governance reporting for duplicate ProcessDirect Sender addresses, without treating valid many-to-one Receiver usage as an error.
+- Add export/import of dependency database for support diagnostics.
+
+
 ## Version 1.0.0
 
 - Added product owner information in the top-right corner of the extension UI.
 - Set Chrome extension manifest version to `1.0.0`.
+- Added copyright/source-available headers to source files.
+- Added SEKO Consulting Source-Available Free Internal Use License file.
 
 
 ## Version 1.0.1
@@ -151,4 +172,12 @@ The default cascade depth is 4 and can be changed in configuration.
 
 - Added visible version number to the application header and popup.
 - Added version metadata to source file headers.
+
+## Version 1.0.8
+
+- Removed false ambiguity warnings for valid many-to-one and one-to-many ProcessDirect relationships.
+- Added missing-target validation: Receiver adapters with no matching Sender adapter are highlighted as errors.
+- Added Target status column and red row highlighting in the Database tab.
+- Diagram/tree warnings now focus on missing target iFlows rather than multiple valid incoming/outgoing links.
+- Updated license to source-available, free for corporate/enterprise internal use, with no resale/commercial redistribution without permission.
 

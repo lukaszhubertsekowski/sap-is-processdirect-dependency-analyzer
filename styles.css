@@ -2,8 +2,8 @@
  * SAP IS ProcessDirect Dependency Explorer
  * Copyright (c) 2026 SEKO Consulting - Lukasz Sekowski
  * Contact: lukasz.hubert.sekowski@gmail.com
- * Version: 1.0.6
- * SPDX-License-Identifier: MIT
+ * Version: 1.0.8
+ * SPDX-License-Identifier: LicenseRef-SEKO-Free-Internal-Use
  */
 
 :root {
@@ -75,6 +75,7 @@ input:focus, select:focus { outline: 2px solid rgba(10,110,209,0.18); border-col
 .log { background: #0f172a; color: #dbeafe; padding: 14px; border-radius: 12px; height: 340px; overflow: auto; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
 .summary { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; margin: 16px 0; }
 .metric { background: #f7f9fc; border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+.metric.metric-error { background: #fff0f0; border-color: #ffb8b8; color: #8b0000; }
 .metric strong { display: block; font-size: 24px; margin-bottom: 4px; }
 .table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -84,6 +85,12 @@ th { background: #f2f5fa; position: sticky; top: 0; }
 .badge.sender { background: #eef9f1; color: #107e3e; border-color: #ccebd6; }
 .badge.receiver { background: #fff3e8; color: #b45f06; border-color: #ffdcb8; }
 .badge.unresolved { background: #fff4ce; color: var(--warn); border-color: #ffe08a; }
+.badge.ok { background: #eef9f1; color: #107e3e; border-color: #ccebd6; }
+.badge.neutral { background: #eef2f7; color: #354a5f; border-color: #d7dfea; }
+.adapter-row-error { background: #fff4f4; }
+.adapter-row-error td { border-bottom-color: #ffd1d1; }
+.status-comment { margin-top: 5px; color: var(--muted); font-size: 12px; max-width: 360px; }
+.adapter-row-error .status-comment { color: #8b0000; }
 .tree { margin-top: 18px; }
 .tree-node { border-left: 3px solid #d7e7fb; margin: 0 0 10px 0; padding-left: 14px; }
 .node-card { border: 1px solid var(--border); background: #fff; border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
@@ -94,6 +101,7 @@ th { background: #f2f5fa; position: sticky; top: 0; }
 .node-meta { margin-top: 7px; color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
 .children { margin-left: 22px; }
 .warnings .warning { border: 1px solid #ffe08a; background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.warnings .warning.error { border-color: #ffb8b8; background: #fff0f0; color: #8b0000; }
 .empty { padding: 18px; color: var(--muted); background: #f7f9fc; border: 1px dashed var(--border); border-radius: 12px; }
 code { background: #eef2f7; padding: 2px 5px; border-radius: 5px; }
 
@@ -154,3 +162,37 @@ code { background: #eef2f7; padding: 2px 5px; border-radius: 5px; }
 }
 
 .diagram-toolbar .download-button { min-width: 118px; font-weight: 600; }
+
+.diagram-node.missing-target { border-color: #d22020; background: #fff5f5; }
+.diagram-node.missing-target::before { background: #d22020; }
+.diagram-node-badge.missing-target { background: #fff0f0; border-color: #ffb8b8; color: #8b0000; }
+.diagram-edge.missing-target { stroke: #d22020; stroke-dasharray: 7 5; }
+.issue-text { color: #8b0000; }
+.diagram-summary-error { color: #8b0000; background: #fff0f0; border-color: #ffb8b8; }
+
+.metric-click {
+  display: block;
+  width: 100%;
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: none;
+}
+.metric-click:hover,
+.metric-click:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(10,110,209,0.12);
+  outline: none;
+}
+.metric-click.metric-active {
+  border-color: var(--primary);
+  background: #edf5ff;
+  box-shadow: 0 0 0 3px rgba(10,110,209,0.10);
+}
+.metric-click.metric-error.metric-active {
+  border-color: #d22020;
+  background: #fff0f0;
+  box-shadow: 0 0 0 3px rgba(210,32,32,0.12);
+}
+.metric-click span { display: block; }
+.table-title { margin: 0 0 12px; font-size: 16px; }

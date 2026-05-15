@@ -41,13 +41,13 @@ iFlow_downstream
 - Replaced tenant-specific examples with neutral placeholders.
 - Updated generated iFlow links to the fixed SAP IS route `/shell/design/contentpackage/{packageId}/integrationflows/{iflowId}`.
 
-## v1.0.0 branding and open-source metadata validation
+## v1.0.0 branding and source-available metadata validation
 
 - Manifest version updated to `1.0.0`.
 - Added author metadata: SEKO Consulting - Lukasz Sekowski.
 - Added product owner/contact information in the top-right corner of the main extension UI.
-- Added copyright and SPDX MIT license headers to source files.
-- Added MIT license file.
+- Added copyright and source-available license headers to source files.
+- Added source-available free internal use license file.
 
 
 ## Version 1.0.1
@@ -87,9 +87,14 @@ iFlow_downstream
 - Added explicit click and keyboard handlers for diagram nodes, independent of default anchor behavior.
 - Verified JavaScript syntax with `node --check app.js`.
 
-## Version 1.0.6
+## Version 1.0.8
 
-- Manifest version updated to `1.0.6`.
+- Removed false ambiguity warnings for valid many-to-one and one-to-many ProcessDirect relationships.
+- Verified the uploaded database case where `/em/cn/dwms/inbounddeliveryconfirmation` has two Receiver adapters and one matching Sender adapter; this is now treated as valid.
+- Receiver adapters with no matching Sender adapter are marked as missing target errors in the Database tab.
+- Updated JavaScript syntax validation.
+
+- Manifest version updated to `1.0.8`.
 - Visible version number added to the main application header and popup owner block.
 - Source file headers include version metadata.
 - Verified JavaScript syntax with `node --check app.js`.

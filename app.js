@@ -2,9 +2,11 @@
  * SAP IS ProcessDirect Dependency Explorer
  * Copyright (c) 2026 SEKO Consulting - Lukasz Sekowski
  * Contact: lukasz.hubert.sekowski@gmail.com
+ * Version: 1.0.8
  *
- * This product is provided as an open-source project.
- * SPDX-License-Identifier: MIT
+ * This product is source-available and free for personal, consulting, corporate, and enterprise internal use.
+ * Resale, sublicensing, marketplace publication, or inclusion in paid products/services requires prior written permission.
+ * SPDX-License-Identifier: LicenseRef-SEKO-Free-Internal-Use
  */
 
 const DEFAULT_CONFIG = {
@@ -26,7 +28,8 @@ const STORE_META = 'meta';
 const state = {
   config: { ...DEFAULT_CONFIG },
   syncAbortController: null,
-  lastDiagramModel: null
+  lastDiagramModel: null,
+  dbView: 'adapters'
 };
 
 const $ = (id) => document.getElementById(id);
@@ -61,6 +64,8 @@ function bindActions() {
   $('generateDiagram').addEventListener('click', generateDependencyDiagram);
   $('downloadDiagramPng').addEventListener('click', downloadDiagramAsPng);
   $('refreshDb').addEventListener('click', refreshDbSummary);
+  $('dbSummary').addEventListener('click', handleDbSummaryClick);
+  $('dbSummary').addEventListener('keydown', handleDbSummaryKeydown);
   $('exportDb').addEventListener('click', exportDatabaseJson);
   $('clearDb').addEventListener('click', clearDatabaseWithConfirm);
 }
@@ -826,6 +831,27 @@ function buildBidirectionalDiagramModel(ctx) {
     return key;
   }
 
+  function addMissingTargetNode(adapter, side, level) {
+    const address = adapter.resolvedAddress || adapter.rawAddress || 'unknown-address';
+    const key = `missing:${side}:${level}:${adapter.iflowId}:${adapter.adapterMessageFlowId}:${address}`;
+    if (!nodes.has(key)) {
+      nodes.set(key, {
+        key,
+        iflow: {
+          id: address,
+          name: 'Missing target iFlow',
+          packageId: '',
+          missingReason: 'Missing target'
+        },
+        side,
+        level,
+        column: side === 'upstream' ? -level : level,
+        missingTarget: true
+      });
+    }
+    return key;
+  }
+
   const rootKey = addNode(rootIflowId, 'root', 0);
 
   function walk(currentIflowId, currentKey, side, level, path) {
@@ -848,13 +874,26 @@ function buildBidirectionalDiagramModel(ctx) {
       const realMatches = matches.filter((m) => !(m.iflowId === adapter.iflowId && m.adapterMessageFlowId === adapter.adapterMessageFlowId));
 
       if (realMatches.length === 0) {
-        warnings.push(`${currentIflowId}: no ${side === 'downstream' ? 'Sender' : 'Receiver'} match found for ProcessDirect address ${adapter.resolvedAddress}.`);
+        if (side === 'downstream') {
+          warnings.push({
+            severity: 'error',
+            text: `${currentIflowId}: missing target iFlow. Receiver ProcessDirect address ${adapter.resolvedAddress} does not match any Sender adapter in the synchronized database.`
+          });
+          const missingKey = addMissingTargetNode(adapter, side, level);
+          const edge = {
+            from: currentKey,
+            to: missingKey,
+            side,
+            address: adapter.resolvedAddress,
+            fromAdapter: adapter,
+            toAdapter: null,
+            missingTarget: true
+          };
+          const edgeKey = `${edge.from}|${edge.to}|${edge.address}|missing-target`;
+          if (!edges.some((e) => e.key === edgeKey)) edges.push({ ...edge, key: edgeKey });
+        }
         continue;
       }
-      if (realMatches.length > 1) {
-        warnings.push(`${currentIflowId}: ProcessDirect address ${adapter.resolvedAddress} has ${realMatches.length} matching ${side === 'downstream' ? 'Sender' : 'Receiver'} adapters; diagram branch is ambiguous.`);
-      }
-
       for (const match of realMatches) {
         const nextIflowId = match.iflowId;
         const nextKey = addNode(nextIflowId, side, level);
@@ -887,16 +926,19 @@ function buildBidirectionalDiagramModel(ctx) {
 function renderDependencyDiagramHtml(model) {
   const layout = calculateDiagramLayout(model);
   const rootNode = layout.nodes.find((n) => n.key === 'root');
-  const upstreamCount = layout.nodes.filter((n) => n.side === 'upstream').length;
-  const downstreamCount = layout.nodes.filter((n) => n.side === 'downstream').length;
+  const upstreamCount = layout.nodes.filter((n) => n.side === 'upstream' && !n.missingTarget).length;
+  const downstreamCount = layout.nodes.filter((n) => n.side === 'downstream' && !n.missingTarget).length;
+  const missingTargetCount = layout.nodes.filter((n) => n.missingTarget).length;
   const edgeCount = layout.edges.length;
   const incomingAddresses = collectIncomingDiagramAddresses(layout.edges);
 
   const nodeHtml = layout.nodes.map((node) => {
     const iflow = node.iflow;
-    const url = buildIflowUrl(iflow);
-    const sideLabel = node.side === 'root' ? 'selected' : `${node.side} L${node.level}`;
-    const packageLine = iflow.packageId ? `<div class="diagram-node-package"><span>Package:</span> ${escapeHtml(iflow.packageId)}</div>` : '';
+    const url = node.missingTarget ? '' : buildIflowUrl(iflow);
+    const sideLabel = node.missingTarget ? 'missing target' : (node.side === 'root' ? 'selected' : `${node.side} L${node.level}`);
+    const packageLine = node.missingTarget
+      ? `<div class="diagram-node-package issue-text"><span>Issue:</span> ${escapeHtml(iflow.missingReason || 'No matching target Sender adapter found.')}</div>`
+      : (iflow.packageId ? `<div class="diagram-node-package"><span>Package:</span> ${escapeHtml(iflow.packageId)}</div>` : '');
     const addressList = incomingAddresses.get(node.key) || [];
     const addressHtml = node.side === 'root' || addressList.length === 0
       ? ''
@@ -910,10 +952,11 @@ function renderDependencyDiagramHtml(model) {
       ${packageLine}
       ${addressHtml}`;
     const style = `left:${node.x}px;top:${node.y}px;width:${layout.nodeWidth}px;min-height:${layout.nodeHeight}px;`;
+    const nodeClasses = `diagram-node ${node.missingTarget ? 'missing-target' : escapeAttr(node.side)}`;
     if (url) {
-      return `<div class="diagram-node diagram-node-clickable ${escapeAttr(node.side)}" data-url="${escapeAttr(url)}" role="link" tabindex="0" title="Open iFlow in SAP Integration Suite" style="${style}">${content}<div class="diagram-open-hint">Open iFlow ↗</div></div>`;
+      return `<div class="${nodeClasses} diagram-node-clickable" data-url="${escapeAttr(url)}" role="link" tabindex="0" title="Open iFlow in SAP Integration Suite" style="${style}">${content}<div class="diagram-open-hint">Open iFlow ↗</div></div>`;
     }
-    return `<div class="diagram-node ${escapeAttr(node.side)}" style="${style}">${content}</div>`;
+    return `<div class="${nodeClasses}" style="${style}">${content}</div>`;
   }).join('');
 
   const edgePaths = layout.edges.map((edge) => {
@@ -926,7 +969,7 @@ function renderDependencyDiagramHtml(model) {
     const ty = to.y + layout.nodeHeight / 2;
     const midX = sx + Math.max(80, (tx - sx) / 2);
     const path = `M ${sx} ${sy} C ${midX} ${sy}, ${midX} ${ty}, ${tx} ${ty}`;
-    return `<path class="diagram-edge ${escapeAttr(edge.side)}" d="${path}" marker-end="url(#arrowHead)" />`;
+    return `<path class="diagram-edge ${edge.missingTarget ? 'missing-target' : escapeAttr(edge.side)}" d="${path}" marker-end="url(#arrowHead)" />`;
   }).join('');
 
   const emptyNote = edgeCount === 0
@@ -939,6 +982,7 @@ function renderDependencyDiagramHtml(model) {
       <span>${upstreamCount} upstream iFlow(s)</span>
       <span>${downstreamCount} downstream iFlow(s)</span>
       <span>${edgeCount} ProcessDirect connection(s)</span>
+      ${missingTargetCount ? `<span class="diagram-summary-error">${missingTargetCount} missing target(s)</span>` : ''}
       <span>Connection addresses are shown inside target iFlow cards to avoid label overlap.</span>
     </div>
     ${emptyNote}
@@ -1535,14 +1579,15 @@ function buildDependencyTree(ctx) {
     const realMatches = matches.filter((m) => !(m.iflowId === adapter.iflowId && m.adapterMessageFlowId === adapter.adapterMessageFlowId));
 
     if (realMatches.length === 0) {
-      node.edges.push({ adapter, match: null, address: adapter.resolvedAddress, unresolved: true });
-      warnings.push(`${rootIflowId}: no ${direction === 'downstream' ? 'Sender' : 'Receiver'} match found for ProcessDirect address ${adapter.resolvedAddress}.`);
+      if (direction === 'downstream') {
+        node.edges.push({ adapter, match: null, address: adapter.resolvedAddress, unresolved: true, missingTarget: true });
+        warnings.push({
+          severity: 'error',
+          text: `${rootIflowId}: missing target iFlow. Receiver ProcessDirect address ${adapter.resolvedAddress} does not match any Sender adapter in the synchronized database.`
+        });
+      }
       continue;
     }
-    if (realMatches.length > 1) {
-      warnings.push(`${rootIflowId}: ProcessDirect address ${adapter.resolvedAddress} has ${realMatches.length} matching ${direction === 'downstream' ? 'Sender' : 'Receiver'} adapters; branch is ambiguous.`);
-    }
-
     for (const match of realMatches) {
       const child = buildDependencyTree({
         ...ctx,
@@ -1559,7 +1604,20 @@ function buildDependencyTree(ctx) {
 }
 
 function renderWarnings(warnings) {
-  $('graphWarnings').innerHTML = warnings.map((w) => `<div class="warning">${escapeHtml(w)}</div>`).join('');
+  $('graphWarnings').innerHTML = warnings.map((warning) => {
+    const normalized = normalizeWarning(warning);
+    return `<div class="warning ${escapeAttr(normalized.severity)}">${escapeHtml(normalized.text)}</div>`;
+  }).join('');
+}
+
+function normalizeWarning(warning) {
+  if (warning && typeof warning === 'object') {
+    return {
+      severity: warning.severity || 'warning',
+      text: warning.text || ''
+    };
+  }
+  return { severity: 'warning', text: String(warning || '') };
 }
 
 function renderTreeHtml(root, direction) {
@@ -1619,6 +1677,7 @@ function renderNode(node, direction) {
 }
 
 function buildIflowUrl(iflow) {
+  if (!iflow || iflow.missingReason) return '';
   if (!state.config.uiBaseUrl || !iflow.packageId || !iflow.id) return '';
   const uiBaseUrl = normalizeBaseUrl(state.config.uiBaseUrl).replace(/\/$/, '');
   return `${uiBaseUrl}/shell/design/contentpackage/${encodeURIComponent(iflow.packageId)}/integrationflows/${encodeURIComponent(iflow.id)}`;
@@ -1697,49 +1756,228 @@ function getAll(db, storeName) {
   });
 }
 
+function handleDbSummaryClick(event) {
+  const metric = event.target.closest('[data-db-view]');
+  if (!metric) return;
+  state.dbView = metric.dataset.dbView || 'adapters';
+  refreshDbSummary();
+}
+
+function handleDbSummaryKeydown(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const metric = event.target.closest('[data-db-view]');
+  if (!metric) return;
+  event.preventDefault();
+  state.dbView = metric.dataset.dbView || 'adapters';
+  refreshDbSummary();
+}
+
 async function refreshDbSummary() {
   const db = await readDatabaseSnapshot();
   const senderCount = db.adapters.filter((a) => a.direction === 'Sender').length;
   const receiverCount = db.adapters.filter((a) => a.direction === 'Receiver').length;
-  const unresolvedCount = db.adapters.filter((a) => !a.resolvedAddress || a.addressSource === 'UNRESOLVED_PARAMETER').length;
+  const unresolvedAdapters = getUnresolvedAddressAdapters(db.adapters);
+  const missingTargetAdapters = getMissingTargetAdapters(db.adapters);
   const lastSync = db.meta.summary?.lastSyncAt || 'Never';
 
   $('dbStatus').textContent = `${db.iflows.length} iFlows / ${db.adapters.length} PD adapters`;
   $('dbSummary').innerHTML = `
-    <div class="metric"><strong>${db.iflows.length}</strong>iFlows</div>
-    <div class="metric"><strong>${db.adapters.length}</strong>ProcessDirect adapters</div>
-    <div class="metric"><strong>${senderCount}</strong>Senders</div>
-    <div class="metric"><strong>${receiverCount}</strong>Receivers</div>
-    <div class="metric"><strong>${unresolvedCount}</strong>Unresolved addresses</div>
+    ${renderMetricButton('iflows', db.iflows.length, 'iFlows')}
+    ${renderMetricButton('adapters', db.adapters.length, 'ProcessDirect adapters')}
+    ${renderMetricButton('senders', senderCount, 'Senders')}
+    ${renderMetricButton('receivers', receiverCount, 'Receivers')}
+    ${renderMetricButton('missingTargets', missingTargetAdapters.length, 'Missing target iFlow(s)', missingTargetAdapters.length ? 'metric-error' : '')}
+    ${renderMetricButton('unresolved', unresolvedAdapters.length, 'Unresolved addresses')}
     <div class="metric"><strong>${escapeHtml(db.meta.summary?.source || '-')}</strong>Source</div>
     <div class="metric"><strong>${lastSync === 'Never' ? 'Never' : new Date(lastSync).toLocaleString()}</strong>Last sync</div>
   `;
 
-  renderAdapterTable(db.adapters);
+  state.cachedDbAdaptersForStatus = db.adapters || [];
+  renderDatabaseView(db, state.dbView || 'adapters');
 }
 
-function renderAdapterTable(adapters) {
-  if (!adapters.length) {
-    $('adapterTable').innerHTML = '<div class="empty">No ProcessDirect adapters in local database.</div>';
+function renderMetricButton(view, count, label, extraClass = '') {
+  const active = state.dbView === view ? 'metric-active' : '';
+  return `
+    <button type="button" class="metric metric-click ${active} ${extraClass}" data-db-view="${escapeAttr(view)}" aria-pressed="${active ? 'true' : 'false'}" title="Show ${escapeAttr(label)}">
+      <strong>${escapeHtml(String(count))}</strong>
+      <span>${escapeHtml(label)}</span>
+    </button>`;
+}
+
+function renderDatabaseView(db, view) {
+  const adapters = db.adapters || [];
+  const normalizedView = view || 'adapters';
+
+  if (normalizedView === 'iflows') {
+    renderIflowTable(db.iflows || []);
     return;
   }
+
+  if (normalizedView === 'senders') {
+    renderAdapterTable(adapters.filter((a) => a.direction === 'Sender'), 'ProcessDirect Sender adapters');
+    return;
+  }
+
+  if (normalizedView === 'receivers') {
+    renderAdapterTable(adapters.filter((a) => a.direction === 'Receiver'), 'ProcessDirect Receiver adapters');
+    return;
+  }
+
+  if (normalizedView === 'missingTargets') {
+    renderAdapterTable(getMissingTargetAdapters(adapters), 'Missing target iFlow(s)');
+    return;
+  }
+
+  if (normalizedView === 'unresolved') {
+    renderUnresolvedAddressTable(getUnresolvedAddressAdapters(adapters));
+    return;
+  }
+
+  renderAdapterTable(adapters, 'ProcessDirect adapters');
+}
+
+function getSenderByAddress(adapters) {
+  return groupBy(adapters.filter((a) => a.direction === 'Sender' && a.resolvedAddress), (a) => normalizeAddressKey(a.resolvedAddress));
+}
+
+function getMissingTargetAdapters(adapters) {
+  const senderByAddress = getSenderByAddress(adapters);
+  return adapters.filter((a) => getAdapterLinkStatus(a, senderByAddress).severity === 'error');
+}
+
+function getUnresolvedAddressAdapters(adapters) {
+  return adapters.filter((a) => !a.resolvedAddress || a.addressSource === 'UNRESOLVED_PARAMETER');
+}
+
+function getAdapterLinkStatus(adapter, senderByAddress) {
+  if (adapter.direction !== 'Receiver') {
+    return {
+      severity: 'neutral',
+      label: 'Endpoint',
+      comment: ''
+    };
+  }
+
+  if (!adapter.resolvedAddress) {
+    return {
+      severity: 'warning',
+      label: 'Unresolved address',
+      comment: ''
+    };
+  }
+
+  const matches = senderByAddress.get(normalizeAddressKey(adapter.resolvedAddress)) || [];
+  if (matches.length === 0) {
+    return {
+      severity: 'error',
+      label: 'Missing target',
+      comment: ''
+    };
+  }
+
+  return {
+    severity: 'ok',
+    label: 'Target found',
+    comment: ''
+  };
+}
+
+function renderIflowTable(iflows) {
+  if (!iflows.length) {
+    $('adapterTable').innerHTML = '<div class="empty">No iFlows in local database.</div>';
+    return;
+  }
+
+  const rows = iflows
+    .slice()
+    .sort((a, b) => `${a.packageId || ''}|${a.id || ''}`.localeCompare(`${b.packageId || ''}|${b.id || ''}`))
+    .map((i) => {
+      const rowClass = i.parseStatus === 'ERROR' ? 'adapter-row-error' : '';
+      const statusClass = i.parseStatus === 'ERROR' ? 'unresolved' : 'ok';
+      return `
+      <tr class="${rowClass}">
+        <td>${escapeHtml(i.id || '')}</td>
+        <td>${escapeHtml(i.name || '')}</td>
+        <td>${escapeHtml(i.packageId || '')}</td>
+        <td>${escapeHtml(i.packageName || '')}</td>
+        <td>${escapeHtml(i.version || '')}</td>
+        <td><span class="badge ${statusClass}">${escapeHtml(i.parseStatus || '')}</span></td>
+        <td>${escapeHtml(i.syncedAt ? new Date(i.syncedAt).toLocaleString() : '')}</td>
+      </tr>`;
+    }).join('');
+
+  $('adapterTable').innerHTML = `
+    <h3 class="table-title">iFlows</h3>
+    <table>
+      <thead><tr><th>iFlow ID</th><th>Name</th><th>Package ID</th><th>Package name</th><th>Version</th><th>Parse status</th><th>Synced at</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderUnresolvedAddressTable(adapters) {
+  if (!adapters.length) {
+    $('adapterTable').innerHTML = '<div class="empty">No unresolved ProcessDirect addresses found.</div>';
+    return;
+  }
+
   const rows = adapters
     .slice()
-    .sort((a, b) => `${a.iflowId}|${a.direction}|${a.resolvedAddress}`.localeCompare(`${b.iflowId}|${b.direction}|${b.resolvedAddress}`))
+    .sort((a, b) => `${a.iflowId}|${a.direction}|${a.rawAddress}`.localeCompare(`${b.iflowId}|${b.direction}|${b.rawAddress}`))
     .map((a) => `
       <tr>
-        <td>${escapeHtml(a.iflowId)}</td>
-        <td><span class="badge ${a.direction === 'Sender' ? 'sender' : 'receiver'}">${escapeHtml(a.direction)}</span></td>
-        <td>${escapeHtml(a.adapterName || a.adapterMessageFlowId)}</td>
-        <td><code>${escapeHtml(a.resolvedAddress || '')}</code></td>
+        <td>${escapeHtml(a.iflowId || '')}</td>
+        <td><span class="badge ${a.direction === 'Sender' ? 'sender' : 'receiver'}">${escapeHtml(a.direction || '')}</span></td>
+        <td>${escapeHtml(a.adapterName || a.adapterMessageFlowId || '')}</td>
         <td>${escapeHtml(a.rawAddress || '')}</td>
-        <td><span class="badge ${a.addressSource === 'UNRESOLVED_PARAMETER' ? 'unresolved' : ''}">${escapeHtml(a.addressSource || '')}</span></td>
+        <td>${escapeHtml(a.parameterName || '')}</td>
+        <td><span class="badge unresolved">${escapeHtml(a.addressSource || '')}</span></td>
         <td>${escapeHtml(a.sourceProcessName || '')}</td>
         <td>${escapeHtml(a.sourceStepName || '')}</td>
       </tr>`).join('');
+
   $('adapterTable').innerHTML = `
+    <h3 class="table-title">Unresolved ProcessDirect addresses</h3>
     <table>
-      <thead><tr><th>iFlow</th><th>Direction</th><th>Adapter</th><th>Resolved address</th><th>Raw address</th><th>Source</th><th>Process</th><th>Step</th></tr></thead>
+      <thead><tr><th>iFlow</th><th>Direction</th><th>Adapter</th><th>Raw address</th><th>Parameter</th><th>Source</th><th>Process</th><th>Step</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderAdapterTable(adapters, title = 'ProcessDirect adapters') {
+  if (!adapters.length) {
+    $('adapterTable').innerHTML = `<div class="empty">No records found for ${escapeHtml(title)}.</div>`;
+    return;
+  }
+
+  const senderByAddress = getSenderByAddress(adapters.concat([]));
+  const allDbAdapters = state.cachedDbAdaptersForStatus || adapters;
+  const allSenderByAddress = getSenderByAddress(allDbAdapters);
+  const rows = adapters
+    .slice()
+    .sort((a, b) => `${a.iflowId}|${a.direction}|${a.resolvedAddress}`.localeCompare(`${b.iflowId}|${b.direction}|${b.resolvedAddress}`))
+    .map((a) => {
+      const status = getAdapterLinkStatus(a, allSenderByAddress);
+      const rowClass = status.severity === 'error' ? 'adapter-row-error' : '';
+      const statusBadgeClass = status.severity === 'error' ? 'unresolved' : status.severity === 'ok' ? 'ok' : status.severity === 'warning' ? 'unresolved' : 'neutral';
+      const statusComment = status.comment ? `<div class="status-comment">${escapeHtml(status.comment)}</div>` : '';
+      return `
+      <tr class="${rowClass}">
+        <td>${escapeHtml(a.iflowId || '')}</td>
+        <td><span class="badge ${a.direction === 'Sender' ? 'sender' : 'receiver'}">${escapeHtml(a.direction || '')}</span></td>
+        <td>${escapeHtml(a.adapterName || a.adapterMessageFlowId || '')}</td>
+        <td><code>${escapeHtml(a.resolvedAddress || '')}</code></td>
+        <td>${escapeHtml(a.rawAddress || '')}</td>
+        <td><span class="badge ${a.addressSource === 'UNRESOLVED_PARAMETER' ? 'unresolved' : ''}">${escapeHtml(a.addressSource || '')}</span></td>
+        <td><span class="badge ${statusBadgeClass}">${escapeHtml(status.label)}</span>${statusComment}</td>
+        <td>${escapeHtml(a.sourceProcessName || '')}</td>
+        <td>${escapeHtml(a.sourceStepName || '')}</td>
+      </tr>`;
+    }).join('');
+  $('adapterTable').innerHTML = `
+    <h3 class="table-title">${escapeHtml(title)}</h3>
+    <table>
+      <thead><tr><th>iFlow</th><th>Direction</th><th>Adapter</th><th>Resolved address</th><th>Raw address</th><th>Source</th><th>Target status</th><th>Process</th><th>Step</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
