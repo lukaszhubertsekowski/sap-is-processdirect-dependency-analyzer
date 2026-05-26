@@ -2,7 +2,7 @@
  * SAP IS ProcessDirect Dependency Explorer
  * Copyright (c) 2026 SEKO Consulting - Lukasz Sekowski
  * Contact: lukasz.hubert.sekowski@gmail.com
- * Version: 1.0.8
+ * Version: 1.1.1
  * SPDX-License-Identifier: LicenseRef-SEKO-Free-Internal-Use
  */
 
@@ -76,6 +76,7 @@ input:focus, select:focus { outline: 2px solid rgba(10,110,209,0.18); border-col
 .summary { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px; margin: 16px 0; }
 .metric { background: #f7f9fc; border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
 .metric.metric-error { background: #fff0f0; border-color: #ffb8b8; color: #8b0000; }
+.metric.metric-strong-error { background: #ffe1e1; border-color: #d22020; color: #7a0000; }
 .metric strong { display: block; font-size: 24px; margin-bottom: 4px; }
 .table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 12px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -87,6 +88,9 @@ th { background: #f2f5fa; position: sticky; top: 0; }
 .badge.unresolved { background: #fff4ce; color: var(--warn); border-color: #ffe08a; }
 .badge.ok { background: #eef9f1; color: #107e3e; border-color: #ccebd6; }
 .badge.neutral { background: #eef2f7; color: #354a5f; border-color: #d7dfea; }
+.badge.duplicate { background: #b00020; color: #fff; border-color: #b00020; }
+.adapter-row-duplicate { background: #ffe1e1; }
+.adapter-row-duplicate td { border-bottom-color: #ff9b9b; }
 .adapter-row-error { background: #fff4f4; }
 .adapter-row-error td { border-bottom-color: #ffd1d1; }
 .status-comment { margin-top: 5px; color: var(--muted); font-size: 12px; max-width: 360px; }
@@ -189,10 +193,38 @@ code { background: #eef2f7; padding: 2px 5px; border-radius: 5px; }
   background: #edf5ff;
   box-shadow: 0 0 0 3px rgba(10,110,209,0.10);
 }
-.metric-click.metric-error.metric-active {
+.metric-click.metric-error.metric-active,
+.metric-click.metric-strong-error.metric-active {
   border-color: #d22020;
   background: #fff0f0;
   box-shadow: 0 0 0 3px rgba(210,32,32,0.12);
 }
 .metric-click span { display: block; }
 .table-title { margin: 0 0 12px; font-size: 16px; }
+
+.tab-sub {
+  margin-left: 18px;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-left: 4px solid #d7dfea;
+}
+.tab-sub.active {
+  border-left-color: #fff;
+}
+.where-used-result {
+  margin-top: 18px;
+}
+.where-used-details {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 520px;
+}
+.where-used-details code {
+  word-break: break-word;
+}
+.badge.security-material { background: #edf5ff; color: #0854a0; border-color: #c9e4ff; }
+.badge.keystore-entry { background: #f3e8ff; color: #6a1b9a; border-color: #dec9ff; }
+.where-used-unresolved-row { background: #fff4ce; }
+.where-used-unresolved-row td { border-bottom-color: #ffe08a; }

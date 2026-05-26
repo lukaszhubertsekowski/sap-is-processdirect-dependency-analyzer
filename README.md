@@ -1,6 +1,6 @@
 # SAP IS ProcessDirect Dependency Explorer
 
-**Version:** 1.0.8  
+**Version:** 1.1.1  
 **Author / Product owner:** SEKO Consulting - Lukasz Sekowski  
 **Contact:** lukasz.hubert.sekowski@gmail.com  
 **License:** SEKO Consulting Source-Available Free Internal Use License
@@ -125,50 +125,17 @@ The default cascade depth is 4 and can be changed in configuration.
 - The extension assumes the iFlow ZIP contains UTF-8 XML/properties files.
 - If the SAP API host rejects browser-origin calls despite extension permissions, a lightweight backend proxy may be needed. In many Chrome extension deployments, host permissions are sufficient.
 
-## Version 1.0.0
+## Suggested production hardening
 
-- Added product owner information in the top-right corner of the extension UI.
-- Set Chrome extension manifest version to `1.0.0`.
-- Added copyright/source-available headers to source files.
-- Added SEKO Consulting Source-Available Free Internal Use License file.
+- Restrict `host_permissions` in `manifest.json` from `https://*/*` to exact SAP tenant and OAuth hosts.
+- Add managed enterprise configuration for tenant URLs and OAuth mode.
+- Consider a controlled enterprise rollout model for OAuth/tenant configuration.
+- Add export/import of dependency database for support diagnostics.
 
+## Release notes
 
-## Version 1.0.1
+See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
-- Improved diagram layout so iFlow names and ProcessDirect connection addresses are no longer hidden by overlapping SVG labels.
-- ProcessDirect connection addresses are now displayed inside the target iFlow card.
-- Diagram cards are wider, wrap long names/IDs, and use dynamic card height and spacing.
+## Version 1.1.1 delta synchronization notes
 
-
-## Version 1.0.3
-
-- Added zoom controls to the generated diagram frame.
-- Supported actions: zoom in, zoom out, reset to 100%, fit to frame width.
-- Added Ctrl + mouse wheel zoom inside the diagram frame.
-- Scaled diagram keeps scrollbars so large dependency graphs remain navigable.
-
-## Version 1.0.4
-
-- Removed the active SAP IS tab lookup action from the Explore Dependencies tab.
-- Current iFlow ID is now entered or selected manually from the local synchronized iFlow list.
-- Removed active tab URL parsing logic and reduced extension permissions accordingly.
-
-## Version 1.0.5
-
-- Restored clickable iFlow cards in the generated diagram frame.
-- Diagram nodes now open the fixed SAP IS iFlow URL using an explicit click/keyboard handler.
-- Added visible "Open iFlow" hint on clickable diagram cards.
-
-## Version 1.0.6
-
-- Added visible version number to the application header and popup.
-- Added version metadata to source file headers.
-
-## Version 1.0.8
-
-- Removed false ambiguity warnings for valid many-to-one and one-to-many ProcessDirect relationships.
-- Added missing-target validation: Receiver adapters with no matching Sender adapter are highlighted as errors.
-- Added Target status column and red row highlighting in the Database tab.
-- Diagram/tree warnings now focus on missing target iFlows rather than multiple valid incoming/outgoing links.
-- Updated license to source-available, free for corporate/enterprise internal use, with no resale/commercial redistribution without permission.
-
+Version 1.1.1 corrects delta synchronization. Delta mode now uses iFlow-level / IntegrationDesigntimeArtifact-level `ModifiedDate` values rather than relying on package-level timestamps. The extension still reads the artifact list for each package, but it only downloads and reparses iFlows whose artifact timestamp changed, whose timestamp is missing, or whose local cache entry is missing. This avoids missing changed iFlows when the package timestamp is not updated by the tenant.

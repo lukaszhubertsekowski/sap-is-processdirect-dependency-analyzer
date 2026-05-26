@@ -3,7 +3,7 @@
   SAP IS ProcessDirect Dependency Explorer
   Copyright (c) 2026 SEKO Consulting - Lukasz Sekowski
   Contact: lukasz.hubert.sekowski@gmail.com
-  Version: 1.0.8
+  Version: 1.1.1
   SPDX-License-Identifier: LicenseRef-SEKO-Free-Internal-Use
 -->
 <html>
@@ -23,7 +23,7 @@
         <strong>SEKO Consulting</strong>
         <span>Lukasz Sekowski</span>
         <a href="mailto:lukasz.hubert.sekowski@gmail.com">lukasz.hubert.sekowski@gmail.com</a>
-        <span class="version-label">Version 1.0.8</span>
+        <span class="version-label">Version 1.1.1</span>
       </div>
       <div class="status-pill" id="dbStatus">Database not loaded</div>
     </div>
@@ -35,6 +35,8 @@
       <button class="tab" data-tab="sync">Synchronize iFlows Database</button>
       <button class="tab" data-tab="graph">Explore Dependencies</button>
       <button class="tab" data-tab="database">Database</button>
+      <button class="tab tab-sub" data-tab="where-security">Where Used: Security Material</button>
+      <button class="tab tab-sub" data-tab="where-keystore">Where Used: Keystore</button>
     </nav>
 
     <section id="tab-config" class="panel visible">
@@ -85,6 +87,7 @@
       <p class="muted">Synchronization reads packages, iFlow design-time artifacts, ZIP exports, .iflw BPMN, parameters.prop and parameters.propdef. The parsed graph is stored in local IndexedDB.</p>
       <div class="actions">
         <button id="syncNow" class="primary">Synchronize from SAP IS API</button>
+        <button id="syncDelta" class="primary secondary">Delta synchronize from SAP IS API</button>
         <button id="cancelSync" disabled>Cancel</button>
       </div>
       <details class="offline-import">
@@ -128,6 +131,40 @@
       </div>
       <div id="dbSummary" class="summary"></div>
       <div id="adapterTable" class="table-wrap"></div>
+    </section>
+
+    <section id="tab-where-security" class="panel">
+      <h2>Where Used: Security Material entry</h2>
+      <p class="muted">Search for an SAP Integration Suite Security Material entry, such as a User Credentials or OAuth credential name, and list iFlows where it is referenced.</p>
+      <div class="grid current-iflow">
+        <label>
+          Security Material entry name
+          <input id="securityMaterialEntry" list="securityMaterialList" placeholder="Enter Security Material entry name" />
+          <datalist id="securityMaterialList"></datalist>
+        </label>
+        <div class="actions align-end">
+          <button id="searchSecurityMaterialWhereUsed" class="primary">Search where used</button>
+          <button id="showAllSecurityMaterialWhereUsed">Show all Security Material references</button>
+        </div>
+      </div>
+      <div id="securityMaterialResult" class="table-wrap where-used-result"></div>
+    </section>
+
+    <section id="tab-where-keystore" class="panel">
+      <h2>Where Used: Keystore entry</h2>
+      <p class="muted">Search for a keystore alias, certificate alias, private key alias, or public key alias and list iFlows where it is referenced.</p>
+      <div class="grid current-iflow">
+        <label>
+          Keystore entry / alias name
+          <input id="keystoreEntry" list="keystoreEntryList" placeholder="Enter Keystore entry / alias name" />
+          <datalist id="keystoreEntryList"></datalist>
+        </label>
+        <div class="actions align-end">
+          <button id="searchKeystoreWhereUsed" class="primary">Search where used</button>
+          <button id="showAllKeystoreWhereUsed">Show all Keystore references</button>
+        </div>
+      </div>
+      <div id="keystoreResult" class="table-wrap where-used-result"></div>
     </section>
   </main>
 

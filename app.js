@@ -2,12 +2,15 @@
  * SAP IS ProcessDirect Dependency Explorer
  * Copyright (c) 2026 SEKO Consulting - Lukasz Sekowski
  * Contact: lukasz.hubert.sekowski@gmail.com
- * Version: 1.0.8
+ * Version: 1.1.1
  *
  * This product is source-available and free for personal, consulting, corporate, and enterprise internal use.
  * Resale, sublicensing, marketplace publication, or inclusion in paid products/services requires prior written permission.
  * SPDX-License-Identifier: LicenseRef-SEKO-Free-Internal-Use
  */
+
+const APP_VERSION = '1.1.1';
+const APP_NAME = 'SAP IS ProcessDirect Dependency Explorer';
 
 const DEFAULT_CONFIG = {
   uiBaseUrl: '',
@@ -20,9 +23,10 @@ const DEFAULT_CONFIG = {
 };
 
 const DB_NAME = 'sap-is-processdirect-dependency-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_IFLOWS = 'iflows';
 const STORE_ADAPTERS = 'adapters';
+const STORE_REFERENCES = 'references';
 const STORE_META = 'meta';
 
 const state = {
@@ -40,6 +44,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
   await refreshDbSummary();
   await populateIflowList();
+await populateWhereUsedLists();
 });
 
 function bindTabs() {
@@ -49,6 +54,8 @@ function bindTabs() {
       document.querySelectorAll('.panel').forEach((p) => p.classList.remove('visible'));
       button.classList.add('active');
       $(`tab-${button.dataset.tab}`).classList.add('visible');
+      if (button.dataset.tab === 'where-security') renderWhereUsed('SECURITY_MATERIAL');
+      if (button.dataset.tab === 'where-keystore') renderWhereUsed('KEYSTORE_ENTRY');
     });
   });
 }
@@ -56,7 +63,8 @@ function bindTabs() {
 function bindActions() {
   $('saveConfig').addEventListener('click', saveConfig);
   $('testAuth').addEventListener('click', testAuth);
-  $('syncNow').addEventListener('click', syncFromApi);
+  $('syncNow').addEventListener('click', () => syncFromApi({ delta: false }));
+  $('syncDelta').addEventListener('click', () => syncFromApi({ delta: true }));
   $('cancelSync').addEventListener('click', cancelSync);
   $('importZips').addEventListener('click', importLocalZips);
   $('showDownstream').addEventListener('click', () => renderGraph('downstream'));
@@ -66,6 +74,12 @@ function bindActions() {
   $('refreshDb').addEventListener('click', refreshDbSummary);
   $('dbSummary').addEventListener('click', handleDbSummaryClick);
   $('dbSummary').addEventListener('keydown', handleDbSummaryKeydown);
+  $('searchSecurityMaterialWhereUsed').addEventListener('click', () => renderWhereUsed('SECURITY_MATERIAL'));
+  $('showAllSecurityMaterialWhereUsed').addEventListener('click', () => { $('securityMaterialEntry').value = ''; renderWhereUsed('SECURITY_MATERIAL'); });
+  $('securityMaterialEntry').addEventListener('keydown', (event) => { if (event.key === 'Enter') renderWhereUsed('SECURITY_MATERIAL'); });
+  $('searchKeystoreWhereUsed').addEventListener('click', () => renderWhereUsed('KEYSTORE_ENTRY'));
+  $('showAllKeystoreWhereUsed').addEventListener('click', () => { $('keystoreEntry').value = ''; renderWhereUsed('KEYSTORE_ENTRY'); });
+  $('keystoreEntry').addEventListener('keydown', (event) => { if (event.key === 'Enter') renderWhereUsed('KEYSTORE_ENTRY'); });
   $('exportDb').addEventListener('click', exportDatabaseJson);
   $('clearDb').addEventListener('click', clearDatabaseWithConfirm);
 }
@@ -139,93 +153,153 @@ async function getAccessToken(config) {
   return payload.access_token;
 }
 
-async function syncFromApi() {
+async function syncFromApi(options = {}) {
+  const deltaMode = !!options.delta;
   state.config = readConfigFromForm();
   await chrome.storage.local.set({ pdExplorerConfig: state.config });
 
   const abortController = new AbortController();
   state.syncAbortController = abortController;
   $('syncNow').disabled = true;
+  $('syncDelta').disabled = true;
   $('cancelSync').disabled = false;
   resetProgress();
   clearLog();
 
   try {
-    log('Starting synchronization from SAP Integration Content API...');
+    log(deltaMode ? 'Starting delta synchronization from SAP Integration Content API...' : 'Starting full synchronization from SAP Integration Content API...');
+    const previousDb = deltaMode ? await readDatabaseSnapshot() : { iflows: [], adapters: [], references: [], meta: {} };
+    const previousArtifactIndex = deltaMode ? buildPreviousArtifactDeltaIndex(previousDb) : {};
+
     const token = await getAccessToken(state.config);
     log('OAuth token acquired.');
 
     const api = createApiClient(state.config, token, abortController.signal);
-    const packages = await api.getIntegrationPackages();
+    const packages = (await api.getIntegrationPackages()).map((p) => normalizePackage(p)).filter((p) => p.id);
     log(`Packages received: ${packages.length}`);
 
-    const nextDb = { iflows: [], adapters: [], meta: {} };
+    const nextDb = { iflows: [], adapters: [], references: [], meta: {} };
+    const artifactsToDownload = [];
     let artifactTotal = 0;
-    const packageArtifacts = [];
+    let reusedIflowCount = 0;
+    let refreshedIflowCount = 0;
+    let missingArtifactTimestampCount = 0;
+    let failedPackageArtifactListCount = 0;
 
     for (let pIndex = 0; pIndex < packages.length; pIndex++) {
-      const pkg = normalizePackage(packages[pIndex]);
-      setProgress(pIndex / Math.max(1, packages.length) * 25, `Reading package ${pIndex + 1}/${packages.length}: ${pkg.id}`);
+      const pkg = packages[pIndex];
+      setProgress((pIndex / Math.max(1, packages.length)) * 35, `Reading iFlow metadata for package ${pIndex + 1}/${packages.length}: ${pkg.id}`);
+
       try {
         const artifacts = await api.getPackageIflows(pkg.id);
         const iflowArtifacts = artifacts.map((a) => normalizeArtifact(a)).filter((a) => a.id);
-        artifactTotal += iflowArtifacts.length;
-        packageArtifacts.push({ pkg, artifacts: iflowArtifacts });
-        log(`Package ${pkg.id}: ${iflowArtifacts.length} integration design-time artifacts.`);
+        log(`Package ${pkg.id}: ${iflowArtifacts.length} integration design-time artifact(s) found.`);
+
+        for (const artifact of iflowArtifacts) {
+          artifactTotal += 1;
+          const artifactFingerprint = getArtifactDeltaFingerprint(artifact);
+          const artifactKey = getArtifactDeltaKey(pkg.id, artifact.id);
+          const previousFingerprint = previousArtifactIndex[artifactKey]?.fingerprint || '';
+          const previousIflow = findPreviousIflow(previousDb, pkg.id, artifact.id);
+          const previousAdapters = previousDb.adapters.filter((a) => a.packageId === pkg.id && a.iflowId === artifact.id);
+          const previousReferences = (previousDb.references || []).filter((r) => r.packageId === pkg.id && r.iflowId === artifact.id);
+
+          const canReuseIflow = deltaMode && artifactFingerprint && previousFingerprint && artifactFingerprint === previousFingerprint && previousIflow;
+
+          if (deltaMode && !artifactFingerprint) missingArtifactTimestampCount += 1;
+
+          if (canReuseIflow) {
+            nextDb.iflows.push(previousIflow);
+            nextDb.adapters.push(...previousAdapters);
+            nextDb.references.push(...previousReferences);
+            reusedIflowCount += 1;
+            continue;
+          }
+
+          artifactsToDownload.push({ pkg, artifact, artifactFingerprint });
+          refreshedIflowCount += 1;
+        }
       } catch (error) {
-        log(`Package ${pkg.id}: failed to read artifacts: ${error.message}`, 'WARN');
+        failedPackageArtifactListCount += 1;
+        log(`Package ${pkg.id}: failed to read iFlow artifact list: ${error.message}`, 'WARN');
       }
     }
 
-    log(`Total iFlow artifacts to download: ${artifactTotal}`);
+    if (deltaMode) {
+      log(`Delta summary: total iFlows=${artifactTotal}, reused iFlows=${reusedIflowCount}, refreshed iFlows=${refreshedIflowCount}, iFlows without ModifiedDate=${missingArtifactTimestampCount}.`);
+      if (missingArtifactTimestampCount) {
+        log('Some iFlow artifacts do not expose a reliable ModifiedDate. Those iFlows were refreshed instead of reused.', 'WARN');
+      }
+      if (failedPackageArtifactListCount) {
+        log(`Failed to read artifact lists for ${failedPackageArtifactListCount} package(s). Those package contents could not be synchronized.`, 'WARN');
+      }
+    }
+
+    log(`Total iFlow artifacts to download: ${artifactsToDownload.length}`);
 
     let processed = 0;
-    for (const { pkg, artifacts } of packageArtifacts) {
-      for (const artifact of artifacts) {
-        processed += 1;
-        const pct = 25 + (processed / Math.max(1, artifactTotal)) * 70;
-        setProgress(pct, `Downloading and parsing iFlow ${processed}/${artifactTotal}: ${artifact.id}`);
-        try {
-          const zipBuffer = await api.getIflowZip(artifact.id, artifact.version || 'active');
-          const parsed = await parseIflowZip(zipBuffer, {
-            id: artifact.id,
-            name: artifact.name || artifact.id,
-            version: artifact.version || 'active',
-            packageId: pkg.id,
-            packageName: pkg.name || pkg.id,
-            source: 'SAP_API'
-          });
-          nextDb.iflows.push(parsed.iflow);
-          nextDb.adapters.push(...parsed.adapters);
-          log(`Parsed ${artifact.id}: ${parsed.adapters.length} ProcessDirect adapter(s).`);
-        } catch (error) {
-          log(`Failed to parse ${artifact.id}: ${error.message}`, 'ERROR');
-          nextDb.iflows.push({
-            id: artifact.id,
-            name: artifact.name || artifact.id,
-            version: artifact.version || 'active',
-            packageId: pkg.id,
-            packageName: pkg.name || pkg.id,
-            source: 'SAP_API',
-            parseStatus: 'ERROR',
-            parseError: error.message,
-            syncedAt: new Date().toISOString()
-          });
-        }
+    for (const { pkg, artifact, artifactFingerprint } of artifactsToDownload) {
+      processed += 1;
+      const pct = 35 + (processed / Math.max(1, artifactsToDownload.length)) * 60;
+      setProgress(pct, `Downloading and parsing iFlow ${processed}/${artifactsToDownload.length}: ${artifact.id}`);
+      try {
+        const zipBuffer = await api.getIflowZip(artifact.id, artifact.version || 'active');
+        const parsed = await parseIflowZip(zipBuffer, {
+          id: artifact.id,
+          name: artifact.name || artifact.id,
+          version: artifact.version || 'active',
+          packageId: pkg.id,
+          packageName: pkg.name || pkg.id,
+          source: 'SAP_API'
+        });
+        decorateParsedIflowMetadata(parsed, pkg, artifact, artifactFingerprint);
+        nextDb.iflows.push(parsed.iflow);
+        nextDb.adapters.push(...parsed.adapters);
+        nextDb.references.push(...(parsed.references || []));
+        log(`Parsed ${artifact.id}: ${parsed.adapters.length} ProcessDirect adapter(s), ${(parsed.references || []).length} where-used reference(s).`);
+      } catch (error) {
+        log(`Failed to parse ${artifact.id}: ${error.message}`, 'ERROR');
+        nextDb.iflows.push({
+          id: artifact.id,
+          name: artifact.name || artifact.id,
+          version: artifact.version || 'active',
+          packageId: pkg.id,
+          packageName: pkg.name || pkg.id,
+          packageModifiedDate: pkg.modifiedDate || '',
+          packageDeltaFingerprint: getPackageDeltaFingerprint(pkg),
+          artifactModifiedDate: artifact.modifiedDate || '',
+          artifactDeltaFingerprint: artifactFingerprint || getArtifactDeltaFingerprint(artifact),
+          source: 'SAP_API',
+          parseStatus: 'ERROR',
+          parseError: error.message,
+          syncedAt: new Date().toISOString()
+        });
       }
     }
 
+    const packageIndex = buildPackageDeltaIndex(packages);
+    const artifactIndex = buildArtifactDeltaIndex(nextDb.iflows);
     nextDb.meta = {
       lastSyncAt: new Date().toISOString(),
-      source: 'SAP_API',
+      source: deltaMode ? 'SAP_API_DELTA' : 'SAP_API',
+      syncMode: deltaMode ? 'DELTA' : 'FULL',
+      deltaBasis: 'IFLOW_MODIFIED_DATE',
       packages: packages.length,
+      iflowsTotalFromApi: artifactTotal,
+      iflowsReused: reusedIflowCount,
+      iflowsRefreshed: refreshedIflowCount,
+      iflowsWithoutModifiedDate: missingArtifactTimestampCount,
+      packageArtifactListFailures: failedPackageArtifactListCount,
       iflows: nextDb.iflows.length,
-      adapters: nextDb.adapters.length
+      adapters: nextDb.adapters.length,
+      references: nextDb.references.length,
+      packageIndex,
+      artifactIndex
     };
 
     await replaceDatabase(nextDb);
-    setProgress(100, 'Synchronization completed.');
-    log(`Synchronization completed. iFlows: ${nextDb.iflows.length}, ProcessDirect adapters: ${nextDb.adapters.length}.`);
+    setProgress(100, deltaMode ? 'Delta synchronization completed.' : 'Synchronization completed.');
+    log(`${deltaMode ? 'Delta synchronization' : 'Synchronization'} completed. iFlows: ${nextDb.iflows.length}, ProcessDirect adapters: ${nextDb.adapters.length}, all-adapter where-used references: ${nextDb.references.length}.`);
     await refreshDbSummary();
     await populateIflowList();
   } catch (error) {
@@ -238,6 +312,7 @@ async function syncFromApi() {
     }
   } finally {
     $('syncNow').disabled = false;
+    $('syncDelta').disabled = false;
     $('cancelSync').disabled = true;
     state.syncAbortController = null;
   }
@@ -316,7 +391,7 @@ async function importLocalZips() {
   resetProgress();
   clearLog();
   log(`Importing ${files.length} local ZIP file(s)...`);
-  const nextDb = { iflows: [], adapters: [], meta: {} };
+  const nextDb = { iflows: [], adapters: [], references: [], meta: {} };
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -334,6 +409,7 @@ async function importLocalZips() {
       });
       nextDb.iflows.push(parsed.iflow);
       nextDb.adapters.push(...parsed.adapters);
+      nextDb.references.push(...(parsed.references || []));
       log(`Parsed ${file.name}: iFlow=${parsed.iflow.id}, adapters=${parsed.adapters.length}.`);
     } catch (error) {
       log(`Failed to parse ${file.name}: ${error.message}`, 'ERROR');
@@ -345,7 +421,8 @@ async function importLocalZips() {
     source: 'LOCAL_ZIP',
     packages: 1,
     iflows: nextDb.iflows.length,
-    adapters: nextDb.adapters.length
+    adapters: nextDb.adapters.length,
+    references: nextDb.references.length
   };
   await replaceDatabase(nextDb);
   setProgress(100, 'Local import completed.');
@@ -375,6 +452,7 @@ async function parseIflowZip(zipArrayBuffer, metadata) {
   const iflowName = metadata.name && metadata.name !== metadata.id ? metadata.name : (iflowIdFromPath || metadata.name || iflowId);
 
   const parsedBpmn = parseProcessDirectAdapters(iflwXml, parameters, paramReferences);
+  const parsedReferences = parseWhereUsedReferences(iflwXml, parameters, paramReferences);
   const syncedAt = new Date().toISOString();
 
   const iflow = {
@@ -406,7 +484,18 @@ async function parseIflowZip(zipArrayBuffer, metadata) {
     syncedAt
   }));
 
-  return { iflow, adapters };
+  const references = parsedReferences.map((r, idx) => ({
+    ...r,
+    key: `${iflowId}|${r.referenceType}|${r.elementId || 'element'}|${r.propertyKey || 'property'}|${idx}`,
+    iflowId,
+    iflowName,
+    packageId: metadata.packageId || '',
+    packageName: metadata.packageName || '',
+    version: metadata.version || 'active',
+    syncedAt
+  }));
+
+  return { iflow, adapters, references };
 }
 
 function parseProcessDirectAdapters(iflwXml, parameters, paramReferences) {
@@ -463,6 +552,297 @@ function parseProcessDirectAdapters(iflwXml, parameters, paramReferences) {
     localIntegrationProcessCount: processIndex.processes.filter((p) => p.kind === 'LOCAL_INTEGRATION_PROCESS').length,
     processCallCount: processIndex.processCalls.length
   };
+}
+
+
+function parseWhereUsedReferences(iflwXml, parameters, paramReferences) {
+  const xml = parseXml(iflwXml, 'iflw-where-used');
+  const processIndex = buildProcessIndex(xml);
+  const references = [];
+  const seen = new Set();
+
+  // IMPORTANT: Where-used analysis is intentionally adapter-agnostic.
+  // We scan every ifl:property in the full .iflw BPMN model, not only ProcessDirect
+  // message flows. This covers HTTP, SOAP, OData, SFTP, AS2, XI, IDoc, Mail, JMS,
+  // splitter/helper steps, local integration processes and other adapter/component types.
+  const propertyElements = elementsByLocalName(xml, 'property');
+
+  for (const property of propertyElements) {
+    const pair = readIflPropertyPair(property);
+    if (!pair.key) continue;
+
+    const classification = classifyWhereUsedProperty(pair.key);
+    if (!classification) continue;
+
+    const resolved = resolveConfigReferenceValue(pair.value, parameters);
+    const resolvedEntryName = String(resolved.value || '').trim();
+    const externalizedRawParameter = resolved.parameterName ? `{{${resolved.parameterName}}}` : '';
+    const entryName = String(resolvedEntryName || (resolved.source === 'UNRESOLVED_PARAMETER' ? pair.value : pair.value) || '').trim();
+    if (!isUsefulWhereUsedEntryValue(entryName, resolved.source)) continue;
+
+    const owner = findOwnerElementForIflProperty(property);
+    const ownerProps = owner ? extractIflProperties(owner) : {};
+    const sourceRef = owner?.getAttribute?.('sourceRef') || '';
+    const targetRef = owner?.getAttribute?.('targetRef') || '';
+    const direction = normalizeDirection(ownerProps.direction || inferDirectionFromCmdUri(ownerProps.cmdVariantUri));
+    const location = owner?.localName === 'messageFlow'
+      ? resolveMessageFlowLocation(sourceRef, targetRef, processIndex, direction)
+      : resolveElementLocation(owner, processIndex);
+
+    const reference = {
+      referenceType: classification.referenceType,
+      usageCategory: classification.usageCategory,
+      entryName,
+      resolvedEntryName,
+      normalizedEntryName: normalizeWhereUsedEntryName(resolvedEntryName || entryName),
+      rawValue: pair.value,
+      externalizedRawParameter,
+      valueSource: resolved.source,
+      valueSourceLabel: whereUsedValueSourceLabel(resolved.source),
+      parameterName: resolved.parameterName,
+      resolvedParameterName: resolved.resolvedParameterName || '',
+      parameterReference: resolved.parameterName ? (paramReferences[resolved.parameterName] || paramReferences[resolved.resolvedParameterName] || null) : null,
+      propertyKey: pair.key,
+      elementId: owner?.getAttribute?.('id') || '',
+      elementName: owner?.getAttribute?.('name') || ownerProps.Name || '',
+      elementType: owner?.localName || '',
+      componentType: ownerProps.ComponentType || '',
+      transportProtocol: ownerProps.TransportProtocol || '',
+      messageProtocol: ownerProps.MessageProtocol || '',
+      direction,
+      sourceRef,
+      targetRef,
+      sourceStepId: location.step?.id || '',
+      sourceStepName: location.step?.name || '',
+      sourceStepType: location.step?.type || '',
+      sourceProcessId: location.process?.id || '',
+      sourceProcessName: location.process?.name || '',
+      sourceProcessKind: location.process?.kind || ''
+    };
+
+    const dedupeKey = [reference.referenceType, reference.entryName, reference.propertyKey, reference.elementId, reference.sourceStepId].join('|');
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    references.push(reference);
+  }
+
+  return references;
+}
+
+function readIflPropertyPair(property) {
+  const keyEl = Array.from(property.children || []).find((c) => c.localName === 'key');
+  const valueEl = Array.from(property.children || []).find((c) => c.localName === 'value');
+  return {
+    key: keyEl?.textContent?.trim() || '',
+    value: valueEl?.textContent?.trim() || ''
+  };
+}
+
+function classifyWhereUsedProperty(propertyKey) {
+  const key = String(propertyKey || '').trim();
+  const lower = key.toLowerCase();
+  if (!lower) return null;
+
+  if (
+    lower === 'credentialname' ||
+    lower === 'credential' ||
+    lower === 'securitymaterial' ||
+    lower === 'securitymaterialname' ||
+    lower === 'securitymaterialalias' ||
+    lower === 'usercredential' ||
+    lower === 'usercredentialname' ||
+    lower === 'oauthcredential' ||
+    lower === 'oauthcredentialname' ||
+    lower === 'oauth2credential' ||
+    lower === 'oauth2credentialname' ||
+    lower === 'clientcredentialname' ||
+    lower === 'tokencredentialname' ||
+    lower === 'credentialalias' ||
+    lower === 'credentialref' ||
+    lower === 'credentialreference' ||
+    lower === 'sapcredential' ||
+    lower === 'secureparameter' ||
+    lower === 'secureparametername' ||
+    lower === 'authenticationcredential' ||
+    lower === 'authenticationcredentialname' ||
+    lower === 'authenticationcredentialalias' ||
+    lower === 'clientsecretalias' ||
+    lower === 'clientsecretcredential' ||
+    lower === 'clientsecretcredentialname' ||
+    lower === 'oauth2credentials' ||
+    lower === 'oauth2credentialalias' ||
+    lower === 'accesskeycredential' ||
+    lower === 'accesskeycredentialname' ||
+    lower === 'usernamecredential' ||
+    lower === 'passwordcredential' ||
+    lower === 'passwordcredentialname' ||
+    lower.endsWith('credentialname') ||
+    lower.endsWith('credentialalias') ||
+    lower.includes('credentialname') ||
+    lower.includes('credentialalias') ||
+    lower.includes('securitymaterial') ||
+    lower.includes('oauthcredential') ||
+    lower.includes('secureparameter')
+  ) {
+    return { referenceType: 'SECURITY_MATERIAL', usageCategory: 'Security Material' };
+  }
+
+  if (
+    lower === 'privatekeyalias' ||
+    lower === 'privatekeypairalias' ||
+    lower === 'publickeyalias' ||
+    lower === 'certificatealias' ||
+    lower === 'clientcertificatealias' ||
+    lower === 'keypairalias' ||
+    lower === 'keystorealias' ||
+    lower === 'keystoreentry' ||
+    lower === 'knownhostsalias' ||
+    lower === 'knownhostfilealias' ||
+    lower === 'partnerpublickeyalias' ||
+    lower === 'ownprivatekeyalias' ||
+    lower === 'signingkeyalias' ||
+    lower === 'signaturekeyalias' ||
+    lower === 'encryptioncertificatealias' ||
+    lower === 'decryptionkeyalias' ||
+    lower === 'pgpprivatekeyalias' ||
+    lower === 'pgppublickeyalias' ||
+    lower === 'sslcertificatealias' ||
+    lower === 'tlscertificatealias' ||
+    lower === 'servercertificatealias' ||
+    lower === 'clientkeyalias' ||
+    lower === 'clientprivatekeyalias' ||
+    lower === 'sapkeystorealias' ||
+    lower === 'trustedcertificatealias' ||
+    lower === 'trustedcertalias' ||
+    lower === 'x509certificatealias' ||
+    lower === 'verificationcertificatealias' ||
+    lower === 'signingcertificatealias' ||
+    lower === 'signaturecertificatealias' ||
+    lower === 'encryptionalias' ||
+    lower === 'decryptionalias' ||
+    lower.includes('privatekeyalias') ||
+    lower.includes('publickeyalias') ||
+    lower.includes('certificatealias') ||
+    lower.includes('keystore') ||
+    lower.includes('knownhosts') ||
+    (lower.includes('alias') && /(key|cert|certificate|private|public|pgp|ssl|tls|sign|encrypt|decrypt|knownhost)/i.test(lower))
+  ) {
+    return { referenceType: 'KEYSTORE_ENTRY', usageCategory: 'Keystore Entry' };
+  }
+
+  return null;
+}
+
+function resolveConfigReferenceValue(rawValue, parameters) {
+  const raw = String(rawValue || '').trim();
+  const parameterName = extractExactExternalizedParameterName(raw);
+  if (parameterName) {
+    const match = findExternalizedParameterValue(parameters, parameterName);
+    if (match.found) {
+      return {
+        value: String(match.value || '').trim(),
+        source: 'EXTERNALIZED_PARAMETER',
+        parameterName,
+        resolvedParameterName: match.key
+      };
+    }
+    return {
+      value: '',
+      source: 'UNRESOLVED_PARAMETER',
+      parameterName,
+      resolvedParameterName: ''
+    };
+  }
+  return { value: raw, source: raw ? 'HARDCODED_IFLW' : 'EMPTY', parameterName: null, resolvedParameterName: '' };
+}
+
+function extractExactExternalizedParameterName(rawValue) {
+  // CPI externalized parameters can contain spaces, for example {{AfterShip Credentials}}.
+  const raw = String(rawValue || '').trim();
+  const exactParam = /^\{\{\s*([^{}]+?)\s*\}\}$/.exec(raw);
+  return exactParam ? normalizeExternalizedParameterName(exactParam[1]) : '';
+}
+
+function findExternalizedParameterValue(parameters, parameterName) {
+  const wanted = normalizeParameterLookupName(parameterName);
+  if (!wanted) return { found: false, key: '', value: '' };
+
+  // Fast path: exact lookup after normalizing only wrapper whitespace.
+  if (Object.prototype.hasOwnProperty.call(parameters, parameterName)) {
+    return { found: true, key: parameterName, value: parameters[parameterName] };
+  }
+
+  // Robust path: CPI exports may preserve, escape, encode or slightly normalize spaces.
+  for (const [key, value] of Object.entries(parameters || {})) {
+    if (normalizeParameterLookupName(key) === wanted) {
+      return { found: true, key, value };
+    }
+  }
+  return { found: false, key: '', value: '' };
+}
+
+function normalizeExternalizedParameterName(value) {
+  return String(value || '')
+    .replace(/\\ /g, ' ')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .trim();
+}
+
+function normalizeParameterLookupName(value) {
+  let v = String(value || '').trim();
+  try { v = decodeURIComponent(v); } catch (_) { /* keep original */ }
+  v = v
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\\ /g, ' ')
+    .replace(/[_\-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return v;
+}
+
+function isUsefulWhereUsedEntryValue(value, source = '') {
+  const v = String(value || '').trim();
+  if (!v) return false;
+  if (/^(true|false|none|null|n\/a|na|basic|oauth|oauth2|client_certificate|client-certificate)$/i.test(v)) return false;
+  if (/^\$\{/.test(v)) return false;
+  // Keep unresolved {{parameter}} values visible in the where-used list so users can
+  // identify missing parameter resolution instead of silently losing the reference.
+  if (source !== 'UNRESOLVED_PARAMETER' && /^\{\{.*\}\}$/.test(v)) return false;
+  if (v.length > 240) return false;
+  return true;
+}
+
+function whereUsedValueSourceLabel(source) {
+  if (source === 'EXTERNALIZED_PARAMETER') return 'Externalized Parameter';
+  if (source === 'UNRESOLVED_PARAMETER') return 'Unresolved Parameter';
+  if (source === 'HARDCODED_IFLW') return 'Hardcoded Value';
+  if (source === 'EMPTY') return 'Empty';
+  return source || 'Unknown';
+}
+
+function findOwnerElementForIflProperty(property) {
+  let node = property.parentElement;
+  while (node && node.nodeType === 1) {
+    if (node.localName !== 'extensionElements' && node.localName !== 'property' && node.getAttribute?.('id')) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function resolveElementLocation(element, processIndex) {
+  const id = element?.getAttribute?.('id') || '';
+  const step = id ? processIndex.stepById.get(id) : null;
+  const process = step ? processIndex.processById.get(step.processId) : null;
+  return { stepRef: id, step, process };
+}
+
+function normalizeWhereUsedEntryName(value) {
+  return String(value || '').trim().toLowerCase();
 }
 
 function buildProcessIndex(xml) {
@@ -575,9 +955,8 @@ function normalizeDirection(direction) {
 
 function resolveAddress(rawAddress, parameters) {
   const raw = String(rawAddress || '').trim();
-  const paramMatch = /^\{\{\s*([^{}\s]+)\s*\}\}$/.exec(raw);
-  if (paramMatch) {
-    const parameterName = paramMatch[1];
+  const parameterName = extractExactExternalizedParameterName(raw);
+  if (parameterName) {
     if (Object.prototype.hasOwnProperty.call(parameters, parameterName)) {
       return { value: String(parameters[parameterName] || '').trim(), source: 'EXTERNALIZED_PARAMETER', parameterName };
     }
@@ -1018,120 +1397,10 @@ function setDiagramDownloadAvailability(enabled) {
   if (button) button.disabled = !enabled;
 }
 
-async function downloadDiagramAsPng() {
-  const diagramCanvas = $('diagramCanvas');
-  const zoomLayer = $('diagramZoomLayer');
-  if (!diagramCanvas || !zoomLayer) {
-    alert('Generate the diagram first, then download it as PNG.');
-    setDiagramDownloadAvailability(false);
-    return;
-  }
-
-  const baseWidth = Math.max(1, Math.ceil(Number(zoomLayer.dataset.baseWidth || diagramCanvas.offsetWidth || diagramCanvas.scrollWidth)));
-  const baseHeight = Math.max(1, Math.ceil(Number(zoomLayer.dataset.baseHeight || diagramCanvas.offsetHeight || diagramCanvas.scrollHeight)));
-  const exportScale = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
-
-  const clone = diagramCanvas.cloneNode(true);
-  clone.id = 'diagramCanvasExport';
-  clone.style.width = `${baseWidth}px`;
-  clone.style.height = `${baseHeight}px`;
-  clone.style.transform = 'none';
-  clone.style.position = 'relative';
-  clone.style.background = '#fbfcfe';
-
-  // Keep export deterministic: links are rendered as normal cards, not active browser links.
-  clone.querySelectorAll('a.diagram-node').forEach((link) => {
-    link.removeAttribute('target');
-    link.removeAttribute('rel');
-  });
-
-  const css = getDiagramExportCss();
-  const xhtml = `
-    <div xmlns="http://www.w3.org/1999/xhtml" class="diagram-export-root">
-      <style>${css}</style>
-      ${clone.outerHTML}
-    </div>`;
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${baseWidth}" height="${baseHeight}" viewBox="0 0 ${baseWidth} ${baseHeight}">
-      <foreignObject x="0" y="0" width="100%" height="100%">${xhtml}</foreignObject>
-    </svg>`;
-
-  const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-  try {
-    const image = await loadImage(svgUrl);
-    const output = document.createElement('canvas');
-    output.width = Math.ceil(baseWidth * exportScale);
-    output.height = Math.ceil(baseHeight * exportScale);
-    const ctx = output.getContext('2d');
-    ctx.fillStyle = '#fbfcfe';
-    ctx.fillRect(0, 0, output.width, output.height);
-    ctx.scale(exportScale, exportScale);
-    ctx.drawImage(image, 0, 0, baseWidth, baseHeight);
-
-    const pngBlob = await canvasToPngBlob(output);
-    const rootIflowId = sanitizeFileName($('currentIflowId')?.value || 'iflow');
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    downloadBlob(pngBlob, `sap-is-processdirect-diagram-${rootIflowId}-${timestamp}.png`);
-  } catch (error) {
-    alert(`PNG export failed: ${error.message}`);
-  } finally {
-    URL.revokeObjectURL(svgUrl);
-  }
-}
-
-function getDiagramExportCss() {
-  const css = [];
-  for (const sheet of Array.from(document.styleSheets)) {
-    try {
-      for (const rule of Array.from(sheet.cssRules || [])) css.push(rule.cssText);
-    } catch (error) {
-      // Ignore inaccessible stylesheets. Extension-local stylesheets are accessible.
-    }
-  }
-  css.push(`
-    .diagram-export-root { --bg: #f6f8fb; --panel: #ffffff; --text: #172033; --muted: #5d697c; --border: #d9e0eb; --primary: #0a6ed1; --primary-dark: #0854a0; --secondary: #354a5f; --danger: #bb0000; --ok: #107e3e; --warn-bg: #fff4ce; --warn: #8a6a00; --shadow: 0 12px 32px rgba(23, 32, 51, 0.08); margin: 0; width: 100%; height: 100%; background: #fbfcfe; font-family: Arial, Helvetica, sans-serif; }
-    #diagramCanvasExport { transform: none !important; }
-    #diagramCanvasExport .diagram-node { box-sizing: border-box; }
-    #diagramCanvasExport .diagram-node:hover { border-color: var(--border); box-shadow: 0 8px 22px rgba(23,32,51,0.08); }
-  `);
-  return css.join('\n');
-}
-
-function loadImage(url) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('Could not render the diagram image.'));
-    image.src = url;
-  });
-}
-
-function canvasToPngBlob(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error('Could not create PNG file.'));
-    }, 'image/png');
-  });
-}
-
-function sanitizeFileName(value) {
-  return String(value || 'iflow')
-    .replace(/[^a-z0-9._-]+/gi, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 120) || 'iflow';
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+/*
+ * PNG export is handled by the canvas-based exporter below.
+ * Keeping a single export implementation avoids browser-specific issues with SVG foreignObject rendering.
+ */
 
 function openExternalUrl(url) {
   if (!url) return;
@@ -1233,7 +1502,6 @@ function bindDiagramZoomControls() {
 
   applyZoom(1, false);
 }
-
 
 
 async function downloadDiagramAsPng() {
@@ -1685,33 +1953,37 @@ function buildIflowUrl(iflow) {
 
 async function replaceDatabase(nextDb) {
   const db = await openDb();
-  await txDone(db.transaction([STORE_IFLOWS, STORE_ADAPTERS, STORE_META], 'readwrite'), (tx) => {
+  await txDone(db.transaction([STORE_IFLOWS, STORE_ADAPTERS, STORE_REFERENCES, STORE_META], 'readwrite'), (tx) => {
     tx.objectStore(STORE_IFLOWS).clear();
     tx.objectStore(STORE_ADAPTERS).clear();
+    tx.objectStore(STORE_REFERENCES).clear();
     tx.objectStore(STORE_META).clear();
   });
 
-  await txDone(db.transaction([STORE_IFLOWS, STORE_ADAPTERS, STORE_META], 'readwrite'), (tx) => {
+  await txDone(db.transaction([STORE_IFLOWS, STORE_ADAPTERS, STORE_REFERENCES, STORE_META], 'readwrite'), (tx) => {
     const iflowStore = tx.objectStore(STORE_IFLOWS);
     const adapterStore = tx.objectStore(STORE_ADAPTERS);
+    const referenceStore = tx.objectStore(STORE_REFERENCES);
     const metaStore = tx.objectStore(STORE_META);
-    for (const iflow of nextDb.iflows) iflowStore.put(iflow);
-    for (const adapter of nextDb.adapters) adapterStore.put(adapter);
-    metaStore.put({ key: 'summary', value: nextDb.meta });
+    for (const iflow of nextDb.iflows || []) iflowStore.put(iflow);
+    for (const adapter of nextDb.adapters || []) adapterStore.put(adapter);
+    for (const reference of nextDb.references || []) referenceStore.put(reference);
+    metaStore.put({ key: 'summary', value: nextDb.meta || {} });
   });
   db.close();
 }
 
 async function readDatabaseSnapshot() {
   const db = await openDb();
-  const [iflows, adapters, metaEntries] = await Promise.all([
+  const [iflows, adapters, references, metaEntries] = await Promise.all([
     getAll(db, STORE_IFLOWS),
     getAll(db, STORE_ADAPTERS),
+    getAll(db, STORE_REFERENCES),
     getAll(db, STORE_META)
   ]);
   db.close();
   const meta = Object.fromEntries(metaEntries.map((m) => [m.key, m.value]));
-  return { iflows, adapters, meta };
+  return { iflows, adapters, references, meta };
 }
 
 function openDb() {
@@ -1729,6 +2001,13 @@ function openDb() {
         store.createIndex('iflowId', 'iflowId', { unique: false });
         store.createIndex('direction', 'direction', { unique: false });
         store.createIndex('resolvedAddress', 'resolvedAddress', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_REFERENCES)) {
+        const store = db.createObjectStore(STORE_REFERENCES, { keyPath: 'key' });
+        store.createIndex('iflowId', 'iflowId', { unique: false });
+        store.createIndex('referenceType', 'referenceType', { unique: false });
+        store.createIndex('entryName', 'entryName', { unique: false });
+        store.createIndex('normalizedEntryName', 'normalizedEntryName', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: 'key' });
@@ -1756,6 +2035,142 @@ function getAll(db, storeName) {
   });
 }
 
+
+async function populateWhereUsedLists(dbSnapshot = null) {
+  const db = dbSnapshot || await readDatabaseSnapshot();
+  const references = db.references || [];
+  const securityEntries = uniqueSorted(references.filter((r) => r.referenceType === 'SECURITY_MATERIAL').map(getReferenceSearchName).filter(Boolean));
+  const keystoreEntries = uniqueSorted(references.filter((r) => r.referenceType === 'KEYSTORE_ENTRY').map(getReferenceSearchName).filter(Boolean));
+  if ($('securityMaterialList')) $('securityMaterialList').innerHTML = securityEntries.map((v) => `<option value="${escapeAttr(v)}"></option>`).join('');
+  if ($('keystoreEntryList')) $('keystoreEntryList').innerHTML = keystoreEntries.map((v) => `<option value="${escapeAttr(v)}"></option>`).join('');
+}
+
+async function renderWhereUsed(referenceType) {
+  const db = await readDatabaseSnapshot();
+  await populateWhereUsedLists(db);
+  const isSecurity = referenceType === 'SECURITY_MATERIAL';
+  const input = isSecurity ? $('securityMaterialEntry') : $('keystoreEntry');
+  const result = isSecurity ? $('securityMaterialResult') : $('keystoreResult');
+  const title = isSecurity ? 'Security Material where-used results' : 'Keystore where-used results';
+  const badgeClass = isSecurity ? 'security-material' : 'keystore-entry';
+  const query = normalizeWhereUsedEntryName(input?.value || '');
+  let references = (db.references || []).filter((r) => r.referenceType === referenceType);
+
+  if (query) {
+    references = references.filter((r) => {
+      const values = [
+        r.resolvedEntryName,
+        r.entryName,
+        r.rawValue,
+        r.externalizedRawParameter,
+        r.parameterName,
+        r.resolvedParameterName
+      ].map(normalizeWhereUsedEntryName);
+      return values.some((normalized) => normalized === query || normalized.includes(query));
+    });
+  }
+
+  if (!references.length) {
+    result.innerHTML = `<div class="empty">No ${escapeHtml(isSecurity ? 'Security Material' : 'Keystore')} references found${query ? ` for <code>${escapeHtml(input.value)}</code>` : ''}.</div>`;
+    return;
+  }
+
+  const grouped = groupWhereUsedReferences(references, db.iflows || []);
+  const rows = grouped.map((item) => {
+    const iflowUrl = buildIflowUrl(item.iflow);
+    const iflowLabel = iflowUrl
+      ? `<a href="${escapeAttr(iflowUrl)}" target="_blank" rel="noreferrer">${escapeHtml(item.iflowId)}</a>`
+      : escapeHtml(item.iflowId);
+    const firstRef = item.references[0] || {};
+    const resolvedDisplay = item.resolvedEntryName
+      ? `<code>${escapeHtml(item.resolvedEntryName)}</code>`
+      : '<span class="badge unresolved">Unresolved</span>';
+    const rawDisplay = item.rawParameter
+      ? `<code>${escapeHtml(item.rawParameter)}</code>`
+      : (firstRef.rawValue && firstRef.rawValue !== item.resolvedEntryName ? `<code>${escapeHtml(firstRef.rawValue)}</code>` : '');
+    const sourceBadgeClass = firstRef.valueSource === 'UNRESOLVED_PARAMETER' ? 'unresolved' : (firstRef.valueSource === 'EXTERNALIZED_PARAMETER' ? 'neutral' : 'ok');
+    const sourceDisplay = `<span class="badge ${sourceBadgeClass}">${escapeHtml(item.valueSourceLabel || whereUsedValueSourceLabel(firstRef.valueSource))}</span>`;
+    const usageDetails = item.references.map((r) => {
+      const location = [r.sourceProcessName, r.sourceStepName].filter(Boolean).join(' / ');
+      const component = [r.componentType, r.direction].filter(Boolean).join(' ');
+      const sourceInfo = r.valueSource === 'EXTERNALIZED_PARAMETER'
+        ? ` · resolved from <code>${escapeHtml(r.resolvedParameterName || r.parameterName || '')}</code>`
+        : (r.valueSource === 'UNRESOLVED_PARAMETER' ? ` · unresolved parameter <code>${escapeHtml(r.parameterName || '')}</code>` : '');
+      return `<div><code>${escapeHtml(r.propertyKey || '')}</code>${component ? ` · ${escapeHtml(component)}` : ''}${r.elementName ? ` · ${escapeHtml(r.elementName)}` : ''}${location ? ` · ${escapeHtml(location)}` : ''}${sourceInfo}</div>`;
+    }).join('');
+    return `
+      <tr class="${firstRef.valueSource === 'UNRESOLVED_PARAMETER' ? 'where-used-unresolved-row' : ''}">
+        <td>${resolvedDisplay}</td>
+        <td>${rawDisplay}</td>
+        <td>${sourceDisplay}</td>
+        <td><span class="badge ${badgeClass}">${escapeHtml(isSecurity ? 'Security Material' : 'Keystore')}</span></td>
+        <td>${iflowLabel}</td>
+        <td>${escapeHtml(item.iflowName || '')}</td>
+        <td>${escapeHtml(item.packageId || '')}</td>
+        <td>${escapeHtml(item.packageName || '')}</td>
+        <td>${escapeHtml(String(item.references.length))}</td>
+        <td><div class="where-used-details">${usageDetails}</div></td>
+      </tr>`;
+  }).join('');
+
+  const summaryText = query
+    ? `${grouped.length} iFlow(s) found for ${input.value}`
+    : `${grouped.length} iFlow usage group(s) found across ${uniqueSorted(grouped.map((g) => g.entryName)).length} unique entr${uniqueSorted(grouped.map((g) => g.entryName)).length === 1 ? 'y' : 'ies'}`;
+
+  result.innerHTML = `
+    <h3 class="table-title">${escapeHtml(title)} — ${escapeHtml(summaryText)}</h3>
+    <table>
+      <thead><tr><th>Resolved entry</th><th>Externalized / raw value</th><th>Source</th><th>Type</th><th>iFlow ID</th><th>iFlow name</th><th>Package ID</th><th>Package name</th><th>Usages</th><th>Details</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function groupWhereUsedReferences(references, iflows) {
+  const iflowById = new Map((iflows || []).map((i) => [i.id, i]));
+  const groups = groupBy(references, (r) => `${normalizeWhereUsedEntryName(getReferenceGroupingName(r))}|${r.iflowId}|${normalizeWhereUsedEntryName(r.externalizedRawParameter || r.rawValue || '')}`);
+  return Array.from(groups.values()).map((items) => {
+    const first = items[0];
+    const iflow = iflowById.get(first.iflowId) || {
+      id: first.iflowId,
+      name: first.iflowName,
+      packageId: first.packageId,
+      packageName: first.packageName
+    };
+    return {
+      entryName: first.entryName || '',
+      resolvedEntryName: getReferenceResolvedEntryName(first),
+      rawParameter: first.externalizedRawParameter || first.rawValue || '',
+      valueSourceLabel: first.valueSourceLabel || whereUsedValueSourceLabel(first.valueSource),
+      iflowId: first.iflowId || '',
+      iflowName: first.iflowName || iflow.name || '',
+      packageId: first.packageId || iflow.packageId || '',
+      packageName: first.packageName || iflow.packageName || '',
+      iflow,
+      references: items.slice().sort((a, b) => `${a.propertyKey}|${a.elementName}`.localeCompare(`${b.propertyKey}|${b.elementName}`))
+    };
+  }).sort((a, b) => `${a.entryName}|${a.packageId}|${a.iflowId}`.localeCompare(`${b.entryName}|${b.packageId}|${b.iflowId}`));
+}
+
+function getReferenceResolvedEntryName(reference) {
+  const explicit = String(reference?.resolvedEntryName || '').trim();
+  if (explicit) return explicit;
+  const entryName = String(reference?.entryName || '').trim();
+  if (/^\{\{.*\}\}$/.test(entryName)) return '';
+  return entryName;
+}
+
+function getReferenceGroupingName(reference) {
+  return getReferenceResolvedEntryName(reference) || reference?.entryName || reference?.rawValue || '';
+}
+
+function getReferenceSearchName(reference) {
+  return getReferenceResolvedEntryName(reference) || reference?.entryName || reference?.rawValue || '';
+}
+
+function uniqueSorted(items) {
+  return Array.from(new Set(items.map((v) => String(v || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
 function handleDbSummaryClick(event) {
   const metric = event.target.closest('[data-db-view]');
   if (!metric) return;
@@ -1778,21 +2193,24 @@ async function refreshDbSummary() {
   const receiverCount = db.adapters.filter((a) => a.direction === 'Receiver').length;
   const unresolvedAdapters = getUnresolvedAddressAdapters(db.adapters);
   const missingTargetAdapters = getMissingTargetAdapters(db.adapters);
+  const duplicateSenderAdapters = getDuplicateSenderAdapters(db.adapters);
   const lastSync = db.meta.summary?.lastSyncAt || 'Never';
 
-  $('dbStatus').textContent = `${db.iflows.length} iFlows / ${db.adapters.length} PD adapters`;
+  $('dbStatus').textContent = `${db.iflows.length} iFlows / ${db.adapters.length} PD adapters / ${(db.references || []).length} references`;
   $('dbSummary').innerHTML = `
     ${renderMetricButton('iflows', db.iflows.length, 'iFlows')}
     ${renderMetricButton('adapters', db.adapters.length, 'ProcessDirect adapters')}
     ${renderMetricButton('senders', senderCount, 'Senders')}
     ${renderMetricButton('receivers', receiverCount, 'Receivers')}
     ${renderMetricButton('missingTargets', missingTargetAdapters.length, 'Missing target iFlow(s)', missingTargetAdapters.length ? 'metric-error' : '')}
+    ${renderMetricButton('duplicateSenders', duplicateSenderAdapters.length, 'Duplicate Sender address(es)', duplicateSenderAdapters.length ? 'metric-strong-error' : '')}
     ${renderMetricButton('unresolved', unresolvedAdapters.length, 'Unresolved addresses')}
     <div class="metric"><strong>${escapeHtml(db.meta.summary?.source || '-')}</strong>Source</div>
     <div class="metric"><strong>${lastSync === 'Never' ? 'Never' : new Date(lastSync).toLocaleString()}</strong>Last sync</div>
   `;
 
   state.cachedDbAdaptersForStatus = db.adapters || [];
+  await populateWhereUsedLists(db);
   renderDatabaseView(db, state.dbView || 'adapters');
 }
 
@@ -1810,7 +2228,7 @@ function renderDatabaseView(db, view) {
   const normalizedView = view || 'adapters';
 
   if (normalizedView === 'iflows') {
-    renderIflowTable(db.iflows || []);
+    renderIflowTable(db.iflows || [], adapters);
     return;
   }
 
@@ -1826,6 +2244,11 @@ function renderDatabaseView(db, view) {
 
   if (normalizedView === 'missingTargets') {
     renderAdapterTable(getMissingTargetAdapters(adapters), 'Missing target iFlow(s)');
+    return;
+  }
+
+  if (normalizedView === 'duplicateSenders') {
+    renderDuplicateSenderTable(getDuplicateSenderAdapters(adapters));
     return;
   }
 
@@ -1848,6 +2271,48 @@ function getMissingTargetAdapters(adapters) {
 
 function getUnresolvedAddressAdapters(adapters) {
   return adapters.filter((a) => !a.resolvedAddress || a.addressSource === 'UNRESOLVED_PARAMETER');
+}
+
+function getDuplicateSenderGroups(adapters) {
+  const senderByAddress = groupBy(
+    adapters.filter((a) => a.direction === 'Sender' && isStaticSenderAddressForDuplicateCheck(a)),
+    (a) => normalizeAddressKey(a.resolvedAddress)
+  );
+  return Array.from(senderByAddress.entries())
+    .filter(([, group]) => new Set(group.map((a) => a.iflowId)).size > 1)
+    .map(([address, group]) => ({ address, adapters: group }));
+}
+
+function getDuplicateSenderAdapters(adapters) {
+  return getDuplicateSenderGroups(adapters).flatMap((group) => group.adapters.map((adapter) => ({
+    ...adapter,
+    duplicateAddress: group.address,
+    duplicateCount: group.adapters.length,
+    duplicateIflowCount: new Set(group.adapters.map((a) => a.iflowId)).size
+  })));
+}
+
+function getDuplicateSenderKeySet(adapters) {
+  return new Set(getDuplicateSenderAdapters(adapters).map((a) => a.key));
+}
+
+function isStaticSenderAddressForDuplicateCheck(adapter) {
+  if (adapter.direction !== 'Sender') return false;
+  const resolved = String(adapter.resolvedAddress || '').trim();
+  const raw = String(adapter.rawAddress || '').trim();
+  const parameterName = String(adapter.parameterName || '').trim();
+  if (!resolved) return false;
+
+  // Dynamic ProcessDirect addresses are intentionally ignored because SAP IS resolves them at runtime.
+  if (resolved.includes('${') || raw.includes('${')) return false;
+  if (/\$\{\s*(property|header|exchangeProperty|body|variable)\b/i.test(resolved) || /\$\{\s*(property|header|exchangeProperty|body|variable)\b/i.test(raw)) return false;
+
+  // Generic handler/template patterns are intentionally ignored.
+  if (resolved.includes('{{') || resolved.includes('}}')) return false;
+  if (!parameterName && (raw.includes('{{') || raw.includes('}}'))) return false;
+  if (/^PROCESS_DIRECT_SENDER$/i.test(parameterName)) return false;
+
+  return true;
 }
 
 function getAdapterLinkStatus(adapter, senderByAddress) {
@@ -1883,18 +2348,21 @@ function getAdapterLinkStatus(adapter, senderByAddress) {
   };
 }
 
-function renderIflowTable(iflows) {
+function renderIflowTable(iflows, adapters = []) {
   if (!iflows.length) {
     $('adapterTable').innerHTML = '<div class="empty">No iFlows in local database.</div>';
     return;
   }
 
+  const duplicateIflowIds = new Set(getDuplicateSenderAdapters(adapters).map((a) => a.iflowId));
   const rows = iflows
     .slice()
     .sort((a, b) => `${a.packageId || ''}|${a.id || ''}`.localeCompare(`${b.packageId || ''}|${b.id || ''}`))
     .map((i) => {
-      const rowClass = i.parseStatus === 'ERROR' ? 'adapter-row-error' : '';
+      const isDuplicateSender = duplicateIflowIds.has(i.id);
+      const rowClass = i.parseStatus === 'ERROR' ? 'adapter-row-error' : isDuplicateSender ? 'adapter-row-duplicate' : '';
       const statusClass = i.parseStatus === 'ERROR' ? 'unresolved' : 'ok';
+      const senderStatus = isDuplicateSender ? '<span class="badge duplicate">Duplicate sender</span>' : '';
       return `
       <tr class="${rowClass}">
         <td>${escapeHtml(i.id || '')}</td>
@@ -1903,6 +2371,7 @@ function renderIflowTable(iflows) {
         <td>${escapeHtml(i.packageName || '')}</td>
         <td>${escapeHtml(i.version || '')}</td>
         <td><span class="badge ${statusClass}">${escapeHtml(i.parseStatus || '')}</span></td>
+        <td>${senderStatus}</td>
         <td>${escapeHtml(i.syncedAt ? new Date(i.syncedAt).toLocaleString() : '')}</td>
       </tr>`;
     }).join('');
@@ -1910,7 +2379,7 @@ function renderIflowTable(iflows) {
   $('adapterTable').innerHTML = `
     <h3 class="table-title">iFlows</h3>
     <table>
-      <thead><tr><th>iFlow ID</th><th>Name</th><th>Package ID</th><th>Package name</th><th>Version</th><th>Parse status</th><th>Synced at</th></tr></thead>
+      <thead><tr><th>iFlow ID</th><th>Name</th><th>Package ID</th><th>Package name</th><th>Version</th><th>Parse status</th><th>PD Sender status</th><th>Synced at</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
@@ -1944,6 +2413,38 @@ function renderUnresolvedAddressTable(adapters) {
     </table>`;
 }
 
+
+function renderDuplicateSenderTable(adapters) {
+  if (!adapters.length) {
+    $('adapterTable').innerHTML = '<div class="empty">No duplicate static ProcessDirect Sender addresses found.</div>';
+    return;
+  }
+
+  const rows = adapters
+    .slice()
+    .sort((a, b) => `${a.duplicateAddress || a.resolvedAddress}|${a.iflowId}|${a.adapterName}`.localeCompare(`${b.duplicateAddress || b.resolvedAddress}|${b.iflowId}|${b.adapterName}`))
+    .map((a) => `
+      <tr class="adapter-row-duplicate">
+        <td><code>${escapeHtml(a.duplicateAddress || a.resolvedAddress || '')}</code></td>
+        <td><span class="badge duplicate">Duplicate sender</span></td>
+        <td>${escapeHtml(a.iflowId || '')}</td>
+        <td>${escapeHtml(a.iflowName || '')}</td>
+        <td>${escapeHtml(a.packageId || '')}</td>
+        <td>${escapeHtml(a.adapterName || a.adapterMessageFlowId || '')}</td>
+        <td>${escapeHtml(a.rawAddress || '')}</td>
+        <td><span class="badge ${a.addressSource === 'UNRESOLVED_PARAMETER' ? 'unresolved' : ''}">${escapeHtml(a.addressSource || '')}</span></td>
+        <td>${escapeHtml(a.parameterName || '')}</td>
+        <td>${escapeHtml(String(a.duplicateIflowCount || a.duplicateCount || ''))}</td>
+      </tr>`).join('');
+
+  $('adapterTable').innerHTML = `
+    <h3 class="table-title">Duplicate static ProcessDirect Sender addresses</h3>
+    <table>
+      <thead><tr><th>Address</th><th>Status</th><th>iFlow ID</th><th>iFlow name</th><th>Package ID</th><th>Adapter</th><th>Raw address</th><th>Source</th><th>Parameter</th><th>iFlows sharing address</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 function renderAdapterTable(adapters, title = 'ProcessDirect adapters') {
   if (!adapters.length) {
     $('adapterTable').innerHTML = `<div class="empty">No records found for ${escapeHtml(title)}.</div>`;
@@ -1953,13 +2454,16 @@ function renderAdapterTable(adapters, title = 'ProcessDirect adapters') {
   const senderByAddress = getSenderByAddress(adapters.concat([]));
   const allDbAdapters = state.cachedDbAdaptersForStatus || adapters;
   const allSenderByAddress = getSenderByAddress(allDbAdapters);
+  const duplicateSenderKeys = getDuplicateSenderKeySet(allDbAdapters);
   const rows = adapters
     .slice()
     .sort((a, b) => `${a.iflowId}|${a.direction}|${a.resolvedAddress}`.localeCompare(`${b.iflowId}|${b.direction}|${b.resolvedAddress}`))
     .map((a) => {
       const status = getAdapterLinkStatus(a, allSenderByAddress);
-      const rowClass = status.severity === 'error' ? 'adapter-row-error' : '';
-      const statusBadgeClass = status.severity === 'error' ? 'unresolved' : status.severity === 'ok' ? 'ok' : status.severity === 'warning' ? 'unresolved' : 'neutral';
+      const duplicateSender = duplicateSenderKeys.has(a.key);
+      const rowClass = status.severity === 'error' ? 'adapter-row-error' : duplicateSender ? 'adapter-row-duplicate' : '';
+      const statusBadgeClass = duplicateSender ? 'duplicate' : status.severity === 'error' ? 'unresolved' : status.severity === 'ok' ? 'ok' : status.severity === 'warning' ? 'unresolved' : 'neutral';
+      const statusLabel = duplicateSender ? 'Duplicate sender' : status.label;
       const statusComment = status.comment ? `<div class="status-comment">${escapeHtml(status.comment)}</div>` : '';
       return `
       <tr class="${rowClass}">
@@ -1969,7 +2473,7 @@ function renderAdapterTable(adapters, title = 'ProcessDirect adapters') {
         <td><code>${escapeHtml(a.resolvedAddress || '')}</code></td>
         <td>${escapeHtml(a.rawAddress || '')}</td>
         <td><span class="badge ${a.addressSource === 'UNRESOLVED_PARAMETER' ? 'unresolved' : ''}">${escapeHtml(a.addressSource || '')}</span></td>
-        <td><span class="badge ${statusBadgeClass}">${escapeHtml(status.label)}</span>${statusComment}</td>
+        <td><span class="badge ${statusBadgeClass}">${escapeHtml(statusLabel)}</span>${statusComment}</td>
         <td>${escapeHtml(a.sourceProcessName || '')}</td>
         <td>${escapeHtml(a.sourceStepName || '')}</td>
       </tr>`;
@@ -2006,15 +2510,22 @@ async function exportDatabaseJson() {
 
 async function clearDatabaseWithConfirm() {
   if (!confirm('Clear the local iFlow dependency database? Configuration will remain saved.')) return;
-  await replaceDatabase({ iflows: [], adapters: [], meta: { lastSyncAt: new Date().toISOString(), source: 'CLEARED', packages: 0, iflows: 0, adapters: 0 } });
+  await replaceDatabase({ iflows: [], adapters: [], references: [], meta: { lastSyncAt: new Date().toISOString(), source: 'CLEARED', packages: 0, iflows: 0, adapters: 0, references: 0 } });
   await refreshDbSummary();
   await populateIflowList();
 }
 
 function normalizePackage(pkg) {
+  const modifiedDate = pkg.ModifiedDate || pkg.modifiedDate || pkg.ModifiedAt || pkg.modifiedAt || pkg.UpdatedAt || pkg.updatedAt || '';
+  const creationDate = pkg.CreationDate || pkg.creationDate || pkg.CreatedAt || pkg.createdAt || '';
   return {
     id: pkg.Id || pkg.id || pkg.PackageId || '',
-    name: pkg.Name || pkg.name || pkg.PackageName || pkg.Id || ''
+    name: pkg.Name || pkg.name || pkg.PackageName || pkg.Id || '',
+    version: pkg.Version || pkg.version || '',
+    modifiedDate,
+    creationDate,
+    modifiedBy: pkg.ModifiedBy || pkg.modifiedBy || '',
+    createdBy: pkg.CreatedBy || pkg.createdBy || ''
   };
 }
 
@@ -2022,8 +2533,96 @@ function normalizeArtifact(artifact) {
   return {
     id: artifact.Id || artifact.id || artifact.ArtifactId || '',
     name: artifact.Name || artifact.name || artifact.Id || '',
-    version: artifact.Version || artifact.version || 'active'
+    version: artifact.Version || artifact.version || 'active',
+    modifiedDate: artifact.ModifiedDate || artifact.modifiedDate || artifact.ModifiedAt || artifact.modifiedAt || artifact.UpdatedAt || artifact.updatedAt || ''
   };
+}
+
+function decorateParsedIflowMetadata(parsed, pkg, artifact, artifactFingerprint) {
+  const packageModifiedDate = pkg.modifiedDate || '';
+  const packageDeltaFingerprint = getPackageDeltaFingerprint(pkg);
+  const artifactModifiedDate = artifact.modifiedDate || '';
+  const artifactDeltaFingerprint = artifactFingerprint || getArtifactDeltaFingerprint(artifact);
+
+  parsed.iflow.packageModifiedDate = packageModifiedDate;
+  parsed.iflow.packageDeltaFingerprint = packageDeltaFingerprint;
+  parsed.iflow.artifactModifiedDate = artifactModifiedDate;
+  parsed.iflow.artifactDeltaFingerprint = artifactDeltaFingerprint;
+
+  parsed.adapters = parsed.adapters.map((adapter) => ({
+    ...adapter,
+    packageModifiedDate,
+    packageDeltaFingerprint,
+    artifactModifiedDate,
+    artifactDeltaFingerprint
+  }));
+
+  parsed.references = (parsed.references || []).map((reference) => ({
+    ...reference,
+    packageModifiedDate,
+    packageDeltaFingerprint,
+    artifactModifiedDate,
+    artifactDeltaFingerprint
+  }));
+}
+
+function getArtifactDeltaKey(packageId, iflowId) {
+  return `${packageId || ''}::${iflowId || ''}`;
+}
+
+function getArtifactDeltaFingerprint(artifact) {
+  return normalizeTimestampValue(
+    artifact.modifiedDate || artifact.ModifiedDate || artifact.modifiedAt || artifact.ModifiedAt || artifact.UpdatedAt || artifact.updatedAt || ''
+  );
+}
+
+function findPreviousIflow(previousDb, packageId, iflowId) {
+  return (previousDb.iflows || []).find((iflow) => iflow.packageId === packageId && iflow.id === iflowId) || null;
+}
+
+function buildPreviousArtifactDeltaIndex(previousDb) {
+  const summaryIndex = previousDb.meta?.summary?.artifactIndex || {};
+  const fallbackIndex = buildArtifactDeltaIndex(previousDb.iflows || []);
+  return { ...fallbackIndex, ...summaryIndex };
+}
+
+function buildArtifactDeltaIndex(iflows) {
+  const index = {};
+  for (const iflow of iflows || []) {
+    const key = getArtifactDeltaKey(iflow.packageId, iflow.id);
+    if (!key || key === '::') continue;
+    index[key] = {
+      fingerprint: normalizeTimestampValue(iflow.artifactDeltaFingerprint || iflow.artifactModifiedDate || ''),
+      modifiedDate: iflow.artifactModifiedDate || '',
+      version: iflow.version || '',
+      name: iflow.name || '',
+      packageId: iflow.packageId || '',
+      iflowId: iflow.id || ''
+    };
+  }
+  return index;
+}
+
+
+function getPackageDeltaFingerprint(pkg) {
+  return normalizeTimestampValue(pkg.modifiedDate || pkg.ModifiedDate || pkg.modifiedAt || pkg.ModifiedAt || '');
+}
+
+function buildPackageDeltaIndex(packages) {
+  return Object.fromEntries(packages.map((pkg) => [pkg.id, {
+    fingerprint: getPackageDeltaFingerprint(pkg),
+    modifiedDate: pkg.modifiedDate || '',
+    version: pkg.version || '',
+    name: pkg.name || ''
+  }]));
+}
+
+function normalizeTimestampValue(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const odataMatch = raw.match(/^\/Date\((\d+)\)\/$/);
+  if (odataMatch) return odataMatch[1];
+  return raw;
 }
 
 function normalizeODataList(payload) {

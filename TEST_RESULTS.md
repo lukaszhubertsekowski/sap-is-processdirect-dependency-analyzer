@@ -1,8 +1,10 @@
-# Parser validation against provided sample exports
+# Validation notes
+
+## Sample dependency parsing
 
 The parser logic was validated against the provided upstream / middle / downstream scenario and the modified upstream scenario where the ProcessDirect call is triggered from a Local Integration Process.
 
-## Expected dependencies
+Expected chain:
 
 ```text
 iFlow_upstream
@@ -18,83 +20,30 @@ iFlow_downstream
     upstream -> iFlow_upstream via iFlowRecv1
 ```
 
-## Key validation points
+Validated points:
 
-- `iFlow_upstream` receiver address `{{EX_iFlowMid1}}` resolves to `iFlowRecv1` from `parameters.prop`.
-- `iFlow_middle_1` has a hardcoded ProcessDirect sender address `iFlowRecv1`.
-- `iFlow_middle_1` has a hardcoded ProcessDirect receiver address `iFlow_receiverx`.
-- `iFlow_downstream` sender address `{{sender1}}` resolves to `iFlow_receiverx` from `parameters.prop`.
-- Modified `iFlow_upstream` still exposes the same ProcessDirect receiver `messageFlow`, but its source step is inside `Process_8 / Local Integration Process 1`.
-- Therefore the parser scans all `messageFlow` elements globally and does not restrict extraction to the main Integration Process.
+- Externalized ProcessDirect Receiver addresses are resolved from `parameters.prop`.
+- Hardcoded ProcessDirect Sender and Receiver addresses are read directly from `.iflw`.
+- ProcessDirect calls from Local Integration Processes are detected because the parser scans all BPMN `messageFlow` elements globally.
+- Unused parameters in `parameters.prop` are not treated as dependencies unless they are referenced by an actual adapter property.
 
-## v0.2.0 diagram validation
+## Version 1.1.1 maintenance validation
 
-- Added **Generate Diagram** action in the Explore Dependencies tab.
-- The generated diagram uses the same dependency matching rules as the upstream/downstream tree views.
-- For a selected iFlow, upstream dependencies are rendered on the left, the selected/root iFlow is rendered in the center, and downstream dependencies are rendered on the right.
-- Resolved ProcessDirect addresses are shown inside target iFlow cards to avoid overlap.
-- Diagram nodes use the fixed SAP IS route `{uiBaseUrl}/shell/design/contentpackage/{packageId}/integrationflows/{iflowId}` and are clickable when package/iFlow metadata is available.
+- Manifest version updated to `1.1.1`.
+- Source headers, popup and application header updated to `1.1.1`.
+- JavaScript syntax validation completed for `app.js`, `background.js` and `popup.js`.
+- JSON validation completed for `manifest.json`.
+- Delta synchronization logic reviewed and changed from package-level timestamp reuse to artifact-level timestamp comparison.
+- Added artifact-level delta index metadata validation.
+- ZIP package integrity validation completed.
 
-## v0.2.1 anonymization and URL validation
+## Feature validation retained from 1.0.6 - 1.0.13
 
-- Removed iFlow URL Template from Configuration.
-- Replaced tenant-specific examples with neutral placeholders.
-- Updated generated iFlow links to the fixed SAP IS route `/shell/design/contentpackage/{packageId}/integrationflows/{iflowId}`.
-
-## v1.0.0 branding and source-available metadata validation
-
-- Manifest version updated to `1.0.0`.
-- Added author metadata: SEKO Consulting - Lukasz Sekowski.
-- Added product owner/contact information in the top-right corner of the main extension UI.
-- Added copyright and source-available license headers to source files.
-- Added source-available free internal use license file.
-
-
-## Version 1.0.1
-
-- Improved diagram layout so iFlow names and ProcessDirect connection addresses are no longer hidden by overlapping SVG labels.
-- ProcessDirect connection addresses are now displayed inside the target iFlow card.
-- Diagram cards are wider, wrap long names/IDs, and use dynamic card height and spacing.
-
-
-## Version 1.0.3
-
-- Added diagram zoom toolbar with Zoom Out, Reset, Zoom In, and Fit width actions.
-- Added Ctrl + mouse wheel zoom support inside the diagram viewport.
-- Verified that scaled diagrams resize the scrollable layer, keeping large dependency diagrams navigable.
-- Verified JavaScript syntax with `node --check app.js`.
-
-
-## Version 1.0.3
-
-- Added **Download Diagram PNG** button next to **Generate Diagram**.
-- The button is enabled after a diagram is generated and disabled when switching back to tree views.
-- PNG export renders the full diagram canvas, including nodes, arrows, and ProcessDirect address badges.
-- Export is based on the unscaled diagram dimensions, so zoom level and scroll position do not crop the downloaded PNG.
-
-## Version 1.0.4
-
-- Removed active SAP IS tab lookup button from `app.html`.
-- Removed active tab lookup event binding and URL parsing functions from `app.js`.
-- Updated manifest version to `1.0.4`.
-- Removed `tabs` permission from manifest because active-tab URL reading is no longer used.
-- Verified JavaScript syntax with `node --check app.js`.
-
-## Version 1.0.5
-
-- Restored clickable behavior for generated diagram nodes.
-- Clickable diagram nodes use the fixed SAP IS route `/shell/design/contentpackage/{packageId}/integrationflows/{iflowId}`.
-- Added explicit click and keyboard handlers for diagram nodes, independent of default anchor behavior.
-- Verified JavaScript syntax with `node --check app.js`.
-
-## Version 1.0.8
-
-- Removed false ambiguity warnings for valid many-to-one and one-to-many ProcessDirect relationships.
-- Verified the uploaded database case where `/em/cn/dwms/inbounddeliveryconfirmation` has two Receiver adapters and one matching Sender adapter; this is now treated as valid.
-- Receiver adapters with no matching Sender adapter are marked as missing target errors in the Database tab.
-- Updated JavaScript syntax validation.
-
-- Manifest version updated to `1.0.8`.
-- Visible version number added to the main application header and popup owner block.
-- Source file headers include version metadata.
-- Verified JavaScript syntax with `node --check app.js`.
+- Version label is visible in the main header and popup.
+- Many-to-one and one-to-many ProcessDirect relationships are treated as valid.
+- Missing downstream target iFlows are highlighted as missing-target issues.
+- Database summary boxes work as clickable filter buttons.
+- Delta synchronization action is available and uses iFlow / IntegrationDesigntimeArtifact timestamp fingerprinting when reliable.
+- Duplicate static ProcessDirect Sender address validation is available.
+- Security Material and Keystore where-used views scan all adapter/component metadata globally, not only ProcessDirect adapters.
+- Where-used views show resolved entry, externalized/raw value and source.
