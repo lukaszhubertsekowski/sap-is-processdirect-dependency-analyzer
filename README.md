@@ -125,13 +125,6 @@ The default cascade depth is 4 and can be changed in configuration.
 - The extension assumes the iFlow ZIP contains UTF-8 XML/properties files.
 - If the SAP API host rejects browser-origin calls despite extension permissions, a lightweight backend proxy may be needed. In many Chrome extension deployments, host permissions are sufficient.
 
-## Suggested production hardening
-
-- Restrict `host_permissions` in `manifest.json` from `https://*/*` to exact SAP tenant and OAuth hosts.
-- Add managed enterprise configuration for tenant URLs and OAuth mode.
-- Consider a controlled enterprise rollout model for OAuth/tenant configuration.
-- Add export/import of dependency database for support diagnostics.
-
 ## Release notes
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
